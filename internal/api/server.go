@@ -955,6 +955,7 @@ func (s *Server) UpdateClients(cfg *config.Config) {
 	// Update GitTokenStore configuration if it exists
 	if tokenStore, ok := sdkAuth.GetTokenStore().(*store.GitTokenStore); ok {
 		tokenStore.SetConfig(cfg)
+	}
 	// Notify Amp module of config changes (for model mapping hot-reload)
 	if s.ampModule != nil {
 		log.Debugf("triggering amp module config update")
