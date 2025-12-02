@@ -40,9 +40,10 @@ jobs:
         with:
           images: ${{ env.GHCR_REPO }}
           tags: |
-            type=ref,event=branch
+            # Tag image with the Git ref tag (e.g. v1.2.3)
             type=ref,event=tag
-            type=raw,value=latest,enable={{is_default_branch}}
+            # Also publish/update the "latest" tag for every tag build
+            type=raw,value=latest
 
       - name: Generate Build Metadata
         run: |
