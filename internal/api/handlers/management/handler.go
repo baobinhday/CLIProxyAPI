@@ -4,6 +4,7 @@ package management
 
 import (
 	"crypto/subtle"
+	"encoding/json"
 	"fmt"
 	"math"
 	"net/http"
@@ -310,7 +311,7 @@ func (h *Handler) GetStorageReadOnly(c *gin.Context) {
 	}
 
 	c.JSON(http.StatusOK, gin.H{
-		"read_only": h.cfg.Storage.ReadOnly,
+		"read_only": h.cfg.IsReadOnlyStorage(),
 	})
 }
 
@@ -342,7 +343,7 @@ func (h *Handler) GetStorageSyncInterval(c *gin.Context) {
 	}
 
 	c.JSON(http.StatusOK, gin.H{
-		"sync_interval_minutes": h.cfg.Storage.SyncIntervalMinutes,
+		"sync_interval_minutes": h.cfg.SyncIntervalMinutes(),
 	})
 }
 
@@ -371,8 +372,8 @@ func (h *Handler) updateStorageReadOnly(readOnly bool) {
 	defer h.mu.Unlock()
 
 	if h.cfg != nil {
-		oldReadOnly := h.cfg.Storage.ReadOnly
-		h.cfg.Storage.ReadOnly = readOnly
+		oldReadOnly := h.cfg.IsReadOnlyStorage()
+		h.cfg.SetReadOnlyStorage(readOnly)
 
 		// If the scheduler exists, update it with the new configuration
 		if h.scheduler != nil {
@@ -398,7 +399,7 @@ func (h *Handler) updateStorageSyncInterval(syncIntervalMinutes int) {
 	defer h.mu.Unlock()
 
 	if h.cfg != nil {
-		h.cfg.Storage.SyncIntervalMinutes = syncIntervalMinutes
+		h.cfg.SetSyncIntervalMinutes(syncIntervalMinutes)
 
 		// If the scheduler exists, update it with the new configuration
 		if h.scheduler != nil {
@@ -410,6 +411,45 @@ func (h *Handler) updateStorageSyncInterval(syncIntervalMinutes int) {
 	}
 
 	h.persistConfig() // Use the shared persist method to save config and handle response
+	
+	// Persist the change to the standalone read-only storage JSON file
+	h.persistSyncIntervalToJSON(syncIntervalMinutes)
+}
+
+// persistSyncIntervalToJSON persists the sync interval change to the standalone read-only storage JSON file.
+func (h *Handler) persistSyncIntervalToJSON(syncIntervalMinutes int) {
+	// Read the current data/read_only_storage.json file
+	data, err := os.ReadFile("data/read_only_storage.json")
+	if err != nil {
+		if !os.IsNotExist(err) {
+			log.Errorf("Failed to read read_only_storage.json: %v", err)
+		}
+		// If file doesn't exist, we'll create it with the new value
+		data = []byte(`{"read_only": false}`)
+	}
+
+	// Unmarshal into ReadOnlyStorageConfig struct
+	var readOnlyConfig config.ReadOnlyStorageConfig
+	if err := json.Unmarshal(data, &readOnlyConfig); err != nil {
+		log.Errorf("Failed to parse read_only_storage.json: %v", err)
+		return
+	}
+
+	// Update the SyncIntervalMinutes field
+	readOnlyConfig.SyncIntervalMinutes = syncIntervalMinutes
+
+	// Marshal the updated struct back into JSON
+	updatedData, err := json.MarshalIndent(readOnlyConfig, "", "  ")
+	if err != nil {
+		log.Errorf("Failed to marshal updated read-only storage config: %v", err)
+		return
+	}
+
+	// Write the new JSON content back to the file
+	if err := os.WriteFile("data/read_only_storage.json", updatedData, 0644); err != nil {
+		log.Errorf("Failed to write updated read-only storage config: %v", err)
+		return
+	}
 }
 
 // parseBoolField extracts a boolean field from the request body with primary and alternative keys.

@@ -56,7 +56,7 @@ func (s *GitScheduler) Start() error {
 	}
 
 	// Check if read-only mode is enabled
-	if !s.config.Storage.ReadOnly {
+	if !s.config.IsReadOnlyStorage() {
 		log.Info("Git scheduler: read-only mode is disabled, not starting scheduler")
 		s.mu.Unlock()
 		return nil
@@ -118,9 +118,9 @@ func (s *GitScheduler) run(stopCh <-chan struct{}) {
 		}
 
 		// Check if read-only mode is enabled
-		if cfg != nil && cfg.Storage.ReadOnly {
+		if cfg != nil && cfg.IsReadOnlyStorage() {
 			// Calculate sync interval - default to 1 hour if not set or invalid
-			syncInterval := time.Duration(cfg.Storage.SyncIntervalMinutes) * time.Minute
+			syncInterval := time.Duration(cfg.SyncIntervalMinutes()) * time.Minute
 			if syncInterval <= 0 {
 				syncInterval = 60 * time.Minute // Default to 1 hour
 			}
@@ -161,7 +161,7 @@ func (s *GitScheduler) run(stopCh <-chan struct{}) {
 func (s *GitScheduler) sync() error {
 	log.Info("Git scheduler: starting sync operation")
 
-	if s.config.Storage.ReadOnly {
+	if s.config.IsReadOnlyStorage() {
 		// Ensure repository is initialized
 		if err := s.tokenStore.EnsureRepository(); err != nil {
 			return fmt.Errorf("failed to ensure repository: %w", err)
@@ -232,7 +232,7 @@ func (s *GitScheduler) UpdateConfig(cfg *config.Config) error {
 
 	s.mu.Lock()
 	
-	newReadOnly := cfg.Storage.ReadOnly
+	newReadOnly := cfg.IsReadOnlyStorage()
 	
 	// Update the config while holding the lock
 	s.config = cfg

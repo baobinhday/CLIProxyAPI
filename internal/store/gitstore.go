@@ -39,7 +39,7 @@ type GitTokenStore struct {
 // shouldPush returns true if the store should push changes to the remote repository.
 // It returns false if the config is nil or if storage is in read-only mode.
 func (s *GitTokenStore) shouldPush() bool {
-	return s.config != nil && !s.config.Storage.ReadOnly
+	return s.config != nil && !s.config.IsReadOnlyStorage()
 }
 
 // NewGitTokenStore creates a token store that saves credentials to disk through the

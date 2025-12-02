@@ -11,8 +11,10 @@ import (
 	"io/fs"
 	"net/url"
 	"os"
+	"os/signal"
 	"path/filepath"
 	"strings"
+	"syscall"
 	"time"
 
 	"github.com/joho/godotenv"
@@ -366,6 +368,16 @@ func main() {
 	if cfg == nil {
 		cfg = &config.Config{}
 	}
+	
+	// Create the main context with signal handling for graceful shutdown
+	ctxSignal, cancel := signal.NotifyContext(context.Background(), syscall.SIGINT, syscall.SIGTERM)
+	defer cancel()
+
+	// Start the read-only storage configuration file watcher
+	if err = config.StartReadOnlyStorageWatcher(ctxSignal, cfg, "data/read_only_storage.json"); err != nil {
+		log.Errorf("failed to start read-only storage watcher: %v", err)
+		// Continue running even if the watcher fails to start
+	}
 
 	// In cloud deploy mode, check if we have a valid configuration
 	var configFileExists bool
@@ -452,11 +464,11 @@ func main() {
 		// In cloud deploy mode without config file, just wait for shutdown signals
 		if isCloudDeploy && !configFileExists {
 			// No config file available, just wait for shutdown
-			cmd.WaitForCloudDeploy()
+			cmd.WaitForCloudDeploy(ctxSignal)
 			return
 		}
 		// Start the main proxy service
-		managementasset.StartAutoUpdater(context.Background(), configFilePath)
-		cmd.StartService(cfg, configFilePath, password)
+		managementasset.StartAutoUpdater(ctxSignal, configFilePath)
+		cmd.StartService(ctxSignal, cfg, configFilePath, password)
 	}
 }
