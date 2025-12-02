@@ -19,6 +19,8 @@ import (
 	"github.com/go-git/go-git/v6/plumbing/transport"
 	"github.com/go-git/go-git/v6/plumbing/transport/http"
 	cliproxyauth "github.com/router-for-me/CLIProxyAPI/v6/sdk/cliproxy/auth"
+
+	configPkg "github.com/router-for-me/CLIProxyAPI/v6/internal/config"
 )
 
 // GitTokenStore persists token records and auth metadata using git as the backing storage.
@@ -31,6 +33,13 @@ type GitTokenStore struct {
 	remote    string
 	username  string
 	password  string
+	config    *configPkg.Config
+}
+
+// shouldPush returns true if the store should push changes to the remote repository.
+// It returns false if the config is nil or if storage is in read-only mode.
+func (s *GitTokenStore) shouldPush() bool {
+	return s.config != nil && !s.config.Storage.ReadOnly
 }
 
 // NewGitTokenStore creates a token store that saves credentials to disk through the
@@ -41,6 +50,11 @@ func NewGitTokenStore(remote, username, password string) *GitTokenStore {
 		username: username,
 		password: password,
 	}
+}
+
+// SetConfig sets the configuration for the GitTokenStore.
+func (s *GitTokenStore) SetConfig(cfg *configPkg.Config) {
+	s.config = cfg
 }
 
 // SetBaseDir updates the default directory used for auth JSON persistence when no explicit path is provided.
@@ -174,10 +188,12 @@ func (s *GitTokenStore) EnsureRepository() error {
 		}
 		if errPull := worktree.Pull(&git.PullOptions{Auth: authMethod, RemoteName: "origin"}); errPull != nil {
 			switch {
-			case errors.Is(errPull, git.NoErrAlreadyUpToDate),
-				errors.Is(errPull, git.ErrUnstagedChanges),
-				errors.Is(errPull, git.ErrNonFastForwardUpdate):
-				// Ignore clean syncs, local edits, and remote divergence—local changes win.
+			case errors.Is(errPull, git.NoErrAlreadyUpToDate):
+				// Ignore clean syncs
+			case errors.Is(errPull, git.ErrUnstagedChanges):
+				// Log and ignore unstaged changes, let local changes win
+			case errors.Is(errPull, git.ErrNonFastForwardUpdate):
+				// Log and ignore non-fast-forward updates, let local changes win
 			case errors.Is(errPull, transport.ErrAuthenticationRequired),
 				errors.Is(errPull, plumbing.ErrReferenceNotFound),
 				errors.Is(errPull, transport.ErrEmptyRemoteRepository):
@@ -284,6 +300,11 @@ func (s *GitTokenStore) Save(_ context.Context, auth *cliproxyauth.Auth) (string
 	if strings.TrimSpace(messageID) == "" {
 		messageID = filepath.Base(path)
 	}
+	if !s.shouldPush() {
+		// In read-only mode, skip pushing changes to remote
+		return path, nil
+	}
+
 	if errCommit := s.commitAndPushLocked(fmt.Sprintf("Update auth %s", strings.TrimSpace(messageID)), relPath); errCommit != nil {
 		return "", errCommit
 	}
@@ -352,6 +373,12 @@ func (s *GitTokenStore) Delete(_ context.Context, id string) error {
 			return errRel
 		}
 		messageID := id
+
+		if !s.shouldPush() {
+			// In read-only mode, skip pushing changes to remote
+			return nil
+		}
+
 		if errCommit := s.commitAndPushLocked(fmt.Sprintf("Delete auth %s", messageID), rel); errCommit != nil {
 			return errCommit
 		}
@@ -391,6 +418,12 @@ func (s *GitTokenStore) PersistAuthFiles(_ context.Context, message string, path
 	if strings.TrimSpace(message) == "" {
 		message = "Sync watcher updates"
 	}
+
+	if !s.shouldPush() {
+		// In read-only mode, skip pushing changes to remote
+		return nil
+	}
+
 	return s.commitAndPushLocked(message, filtered...)
 }
 
@@ -613,9 +646,12 @@ func (s *GitTokenStore) commitAndPushLocked(message string, relPaths ...string) 
 	} else if errRewrite := s.rewriteHeadAsSingleCommit(repo, headRef.Name(), commitHash, message, signature); errRewrite != nil {
 		return errRewrite
 	}
-	if err = repo.Push(&git.PushOptions{Auth: s.gitAuth(), Force: true}); err != nil {
+	if err = repo.Push(&git.PushOptions{Auth: s.gitAuth()}); err != nil {
 		if errors.Is(err, git.NoErrAlreadyUpToDate) {
 			return nil
+		}
+		if errors.Is(err, git.ErrNonFastForwardUpdate) {
+			return fmt.Errorf("git token store: push failed due to non-fast-forward update - this may require force push or manual resolution: %w", err)
 		}
 		return fmt.Errorf("git token store: push: %w", err)
 	}
@@ -673,6 +709,12 @@ func (s *GitTokenStore) PersistConfig(_ context.Context) error {
 	if err != nil {
 		return err
 	}
+
+	if !s.shouldPush() {
+		// In read-only mode, skip pushing changes to remote
+		return nil
+	}
+
 	return s.commitAndPushLocked("Update config", rel)
 }
 
@@ -746,4 +788,87 @@ func deepEqualJSON(a, b any) bool {
 	default:
 		return false
 	}
+}
+
+// HasPendingLocalChanges checks if there are any uncommitted changes or unpushed commits in the git repository
+func (s *GitTokenStore) HasPendingLocalChanges() (bool, error) {
+	if err := s.EnsureRepository(); err != nil {
+		return false, err
+	}
+
+	repoDir := s.repoDirSnapshot()
+	if repoDir == "" {
+		return false, fmt.Errorf("git token store: repository path not configured")
+	}
+
+	repo, err := git.PlainOpen(repoDir)
+	if err != nil {
+		return false, fmt.Errorf("git token store: open repo: %w", err)
+	}
+
+	// Check for uncommitted changes first
+	hasUncommitted, err := s.hasUncommittedChanges(repo)
+	if err != nil {
+		return false, fmt.Errorf("git token store: check uncommitted changes: %w", err)
+	}
+	if hasUncommitted {
+		return true, nil
+	}
+
+	// Check for unpushed commits
+	return s.hasUnpushedCommits(repo)
+}
+
+// hasUncommittedChanges checks if there are any uncommitted changes in the repository
+func (s *GitTokenStore) hasUncommittedChanges(repo *git.Repository) (bool, error) {
+	worktree, err := repo.Worktree()
+	if err != nil {
+		return false, fmt.Errorf("git token store: worktree: %w", err)
+	}
+
+	status, err := worktree.Status()
+	if err != nil {
+		return false, fmt.Errorf("git token store: get status: %w", err)
+	}
+
+	return !status.IsClean(), nil
+}
+
+// hasUnpushedCommits checks if there are any unpushed commits in the repository
+func (s *GitTokenStore) hasUnpushedCommits(repo *git.Repository) (bool, error) {
+	head, err := repo.Head()
+	if err != nil {
+		return false, fmt.Errorf("git token store: get HEAD: %w", err)
+	}
+
+	// Check if HEAD is detached (not a branch)
+	if !head.Name().IsBranch() {
+		return false, nil
+	}
+
+	// Get the local branch reference
+	branchRef := head.Name()
+	branch, err := repo.Reference(branchRef, true)
+	if err != nil {
+		// Local branch doesn't exist (renamed/deleted), return false
+		return false, nil
+	}
+
+	// Get the remote "origin"
+	_, err = repo.Remote("origin")
+	if err != nil {
+		// No remote configured, return false
+		return false, nil
+	}
+
+	// Get the remote reference for the current branch
+	remoteRefName := plumbing.NewRemoteReferenceName("origin", branchRef.Short())
+	remoteRef, err := repo.Reference(remoteRefName, true)
+	if err != nil {
+		// Remote branch doesn't exist (renamed/deleted remotely), return false
+		return false, nil
+	}
+
+	// Compare the local and remote commit hashes
+	return branch.Hash() != remoteRef.Hash(), nil
 }

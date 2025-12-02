@@ -26,6 +26,7 @@ import (
 	"github.com/router-for-me/CLIProxyAPI/v6/internal/config"
 	"github.com/router-for-me/CLIProxyAPI/v6/internal/logging"
 	"github.com/router-for-me/CLIProxyAPI/v6/internal/managementasset"
+	"github.com/router-for-me/CLIProxyAPI/v6/internal/store"
 	"github.com/router-for-me/CLIProxyAPI/v6/internal/usage"
 	"github.com/router-for-me/CLIProxyAPI/v6/internal/util"
 	sdkaccess "github.com/router-for-me/CLIProxyAPI/v6/sdk/access"
@@ -33,6 +34,7 @@ import (
 	"github.com/router-for-me/CLIProxyAPI/v6/sdk/api/handlers/claude"
 	"github.com/router-for-me/CLIProxyAPI/v6/sdk/api/handlers/gemini"
 	"github.com/router-for-me/CLIProxyAPI/v6/sdk/api/handlers/openai"
+	sdkAuth "github.com/router-for-me/CLIProxyAPI/v6/sdk/auth"
 	"github.com/router-for-me/CLIProxyAPI/v6/sdk/cliproxy/auth"
 	log "github.com/sirupsen/logrus"
 	"gopkg.in/yaml.v3"
@@ -263,6 +265,22 @@ func NewServer(cfg *config.Config, authManager *auth.Manager, accessManager *sdk
 	}
 	s.mgmt.SetLogDirectory(logDir)
 	s.localPassword = optionState.localPassword
+
+	// Initialize and connect the Git scheduler if using Git store
+	if tokenStore, ok := sdkAuth.GetTokenStore().(*store.GitTokenStore); ok {
+		tokenStore.SetConfig(cfg)
+		scheduler := store.NewGitScheduler(cfg, tokenStore)
+		s.mgmt.SetScheduler(scheduler)
+
+		// Start the scheduler if read-only mode is enabled in the configuration
+		if cfg.Storage.ReadOnly {
+			if err := scheduler.Start(); err != nil {
+				log.WithError(err).Error("failed to start Git scheduler")
+			} else {
+				log.Info("Git scheduler started automatically based on read-only configuration")
+			}
+		}
+	}
 
 	// Setup routes
 	s.setupRoutes()
@@ -562,6 +580,14 @@ func (s *Server) registerManagementRoutes() {
 		mgmt.GET("/iflow-auth-url", s.mgmt.RequestIFlowToken)
 		mgmt.POST("/iflow-auth-url", s.mgmt.RequestIFlowCookieToken)
 		mgmt.GET("/get-auth-status", s.mgmt.GetAuthStatus)
+
+		// Storage management endpoints
+		mgmt.GET("/storage/readonly", s.mgmt.GetStorageReadOnly)
+		mgmt.PUT("/storage/readonly", s.mgmt.PutStorageReadOnly)
+		mgmt.PATCH("/storage/readonly", s.mgmt.PutStorageReadOnly)
+		mgmt.GET("/storage/sync-interval", s.mgmt.GetStorageSyncInterval)
+		mgmt.PUT("/storage/sync-interval", s.mgmt.PutStorageSyncInterval)
+		mgmt.PATCH("/storage/sync-interval", s.mgmt.PutStorageSyncInterval)
 	}
 }
 
@@ -914,6 +940,18 @@ func (s *Server) UpdateClients(cfg *config.Config) {
 	if s.mgmt != nil {
 		s.mgmt.SetConfig(cfg)
 		s.mgmt.SetAuthManager(s.handlers.AuthManager)
+	}
+
+	// Update the scheduler configuration if it exists
+	if s.mgmt != nil && s.mgmt.Scheduler() != nil {
+		if err := s.mgmt.Scheduler().UpdateConfig(cfg); err != nil {
+			log.WithError(err).Warn("failed to update scheduler configuration")
+		}
+	}
+
+	// Update GitTokenStore configuration if it exists
+	if tokenStore, ok := sdkAuth.GetTokenStore().(*store.GitTokenStore); ok {
+		tokenStore.SetConfig(cfg)
 	}
 
 	// Count client sources from configuration and auth directory
