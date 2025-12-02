@@ -91,13 +91,14 @@ Using JSON is standard, easy to read, and easy to parse in Go.
 
 ## 2. File Content
 
-The `data/read_only_storage.json` file will have a simple structure containing a single boolean flag.
+The `data/read_only_storage.json` file will have a structure containing both the read-only flag and the sync interval.
 
 **Example:**
 
 ```json
 {
-    "read_only": true
+    "read_only": true,
+    "sync_interval_minutes": 30
 }
 ```
 
@@ -108,7 +109,8 @@ A corresponding Go struct will be used for unmarshaling:
 package config
 
 type ReadOnlyStorageConfig struct {
-    ReadOnly bool `json:"read_only"`
+    ReadOnly            bool `json:"read_only"`
+    SyncIntervalMinutes int  `json:"sync_interval_minutes,omitempty"`
 }
 ```
 
@@ -130,31 +132,37 @@ To make the setting easily accessible throughout the application, it will be int
 
 **Proposed Change in `internal/config/config.go`:**
 
-A new field will be added to the `Config` struct. To ensure thread-safe updates for dynamic reloading, a mutex will be used.
+The `Config` struct will use atomic types for thread-safe access to the read-only storage and sync interval settings.
 
 ```go
-import "sync"
+import "sync/atomic"
 
 type Config struct {
     // ... other existing fields
 
     // Read-only storage settings
-    readOnlyStorage bool
-    readOnlyMutex   sync.RWMutex
+    readOnlyStorage     atomic.Bool
+    syncIntervalMinutes atomic.Int64
 }
 
 // Getter for read-only storage setting
 func (c *Config) IsReadOnlyStorage() bool {
-    c.readOnlyMutex.RLock()
-    defer c.readOnlyMutex.RUnlock()
-    return c.readOnlyStorage
+    return c.readOnlyStorage.Load()
 }
 
 // Setter for read-only storage setting
 func (c *Config) SetReadOnlyStorage(value bool) {
-    c.readOnlyMutex.Lock()
-    defer c.readOnlyMutex.Unlock()
-    c.readOnlyStorage = value
+    c.readOnlyStorage.Store(value)
+}
+
+// Getter for sync interval setting
+func (c *Config) SyncIntervalMinutes() int {
+    return int(c.syncIntervalMinutes.Load())
+}
+
+// Setter for sync interval setting
+func (c *Config) SetSyncIntervalMinutes(value int) {
+    c.syncIntervalMinutes.Store(int64(value))
 }
 ```
 
@@ -170,8 +178,8 @@ To allow runtime changes without a server restart, a file watcher will be implem
 2.  **Goroutine:** A dedicated goroutine will be launched at startup to handle file events.
 3.  **Event Handling:** When a `Write` event is detected on the file, the goroutine will:
     a.  Re-read and parse the `data/read_only_storage.json` file.
-    b.  If successful, update the `readOnlyStorage` value in the global `Config` object using the thread-safe `SetReadOnlyStorage` method.
-    c.  If the file is deleted or becomes invalid, the system could either revert to the default (`false`) or maintain the last known valid state. Reverting to default (`false`) is the safer option.
+    b.  If successful, update the `readOnlyStorage` and `syncIntervalMinutes` values in the global `Config` object using the thread-safe `SetReadOnlyStorage` and `SetSyncIntervalMinutes` methods.
+    c.  If the file is deleted or becomes invalid, the system could either revert to the default values (`read_only: false`, `sync_interval_minutes: 30`) or maintain the last known valid state. Reverting to default values is the safer option.
     d.  Log the change in the configuration.
 
 This approach makes the read-only mode truly dynamic and manageable at runtime.
