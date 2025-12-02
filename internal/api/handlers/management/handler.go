@@ -5,6 +5,7 @@ package management
 import (
 	"crypto/subtle"
 	"fmt"
+	"math"
 	"net/http"
 	"os"
 	"path/filepath"
@@ -15,9 +16,11 @@ import (
 	"github.com/gin-gonic/gin"
 	"github.com/router-for-me/CLIProxyAPI/v6/internal/buildinfo"
 	"github.com/router-for-me/CLIProxyAPI/v6/internal/config"
+	"github.com/router-for-me/CLIProxyAPI/v6/internal/store"
 	"github.com/router-for-me/CLIProxyAPI/v6/internal/usage"
 	sdkAuth "github.com/router-for-me/CLIProxyAPI/v6/sdk/auth"
 	coreauth "github.com/router-for-me/CLIProxyAPI/v6/sdk/cliproxy/auth"
+	log "github.com/sirupsen/logrus"
 	"golang.org/x/crypto/bcrypt"
 )
 
@@ -40,6 +43,7 @@ type Handler struct {
 	allowRemoteOverride bool
 	envSecret           string
 	logDir              string
+	scheduler           *store.GitScheduler
 }
 
 // NewHandler creates a new management handler instance.
@@ -82,6 +86,16 @@ func (h *Handler) SetLogDirectory(dir string) {
 		}
 	}
 	h.logDir = dir
+}
+
+// SetScheduler sets the Git scheduler for the handler.
+func (h *Handler) SetScheduler(scheduler *store.GitScheduler) {
+	h.scheduler = scheduler
+}
+
+// Scheduler returns the Git scheduler for the handler.
+func (h *Handler) Scheduler() *store.GitScheduler {
+	return h.scheduler
 }
 
 // Middleware enforces access control for management endpoints.
@@ -279,4 +293,219 @@ func (h *Handler) updateStringField(c *gin.Context, set func(string)) {
 	}
 	set(*body.Value)
 	h.persist(c)
+}
+
+// GetStorageReadOnly returns the current read-only status of the storage.
+func (h *Handler) GetStorageReadOnly(c *gin.Context) {
+	if h.cfg == nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"error": "configuration not available"})
+		return
+	}
+
+	c.JSON(http.StatusOK, gin.H{
+		"read_only": h.cfg.Storage.ReadOnly,
+	})
+}
+
+// PutStorageReadOnly updates the read-only status of the storage.
+func (h *Handler) PutStorageReadOnly(c *gin.Context) {
+	// Parse the boolean field from the request body
+	value, found := h.parseBoolField(c, "read_only", "value")
+	if !found {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "invalid body"})
+		return
+	}
+
+	if value {
+		// Check if we can enable read-only mode
+		if !h.ensureCanEnableReadOnly(c) {
+			return
+		}
+	}
+
+	h.updateStorageReadOnly(value)
+	c.JSON(http.StatusOK, gin.H{"read_only": value})
+}
+
+// GetStorageSyncInterval returns the current sync interval in minutes.
+func (h *Handler) GetStorageSyncInterval(c *gin.Context) {
+	if h.cfg == nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"error": "configuration not available"})
+		return
+	}
+
+	c.JSON(http.StatusOK, gin.H{
+		"sync_interval_minutes": h.cfg.Storage.SyncIntervalMinutes,
+	})
+}
+
+const minSyncIntervalMinutes = 1
+
+// PutStorageSyncInterval updates the sync interval in minutes.
+func (h *Handler) PutStorageSyncInterval(c *gin.Context) {
+	// Parse the integer field from the request body
+	value, found := h.parseIntField(c, "sync_interval_minutes", "value", minSyncIntervalMinutes)
+	if !found {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "invalid body"})
+		return
+	}
+
+	h.updateStorageSyncInterval(value)
+	c.JSON(http.StatusOK, gin.H{"sync_interval_minutes": value})
+}
+
+// updateStorageReadOnly updates the storage read-only flag and manages the scheduler.
+func (h *Handler) updateStorageReadOnly(readOnly bool) {
+	h.mu.Lock()
+	defer h.mu.Unlock()
+
+	if h.cfg != nil {
+		oldReadOnly := h.cfg.Storage.ReadOnly
+		h.cfg.Storage.ReadOnly = readOnly
+
+		// If the scheduler exists, update it with the new configuration
+		if h.scheduler != nil {
+			_ = h.scheduler.UpdateConfig(h.cfg)
+		}
+
+		// Log the change
+		if oldReadOnly != readOnly {
+			if readOnly {
+				log.Info("Storage read-only mode enabled")
+			} else {
+				log.Info("Storage read-only mode disabled")
+			}
+		}
+	}
+
+	h.persistConfig() // Use the shared persist method to save config and handle response
+}
+
+// updateStorageSyncInterval updates the sync interval and manages the scheduler.
+func (h *Handler) updateStorageSyncInterval(syncIntervalMinutes int) {
+	h.mu.Lock()
+	defer h.mu.Unlock()
+
+	if h.cfg != nil {
+		h.cfg.Storage.SyncIntervalMinutes = syncIntervalMinutes
+
+		// If the scheduler exists, update it with the new configuration
+		if h.scheduler != nil {
+			_ = h.scheduler.UpdateConfig(h.cfg)
+		}
+
+		// Log the change
+		log.Infof("Storage sync interval updated to %d minutes", syncIntervalMinutes)
+	}
+
+	h.persistConfig() // Use the shared persist method to save config and handle response
+}
+
+// parseBoolField extracts a boolean field from the request body with primary and alternative keys.
+func (h *Handler) parseBoolField(c *gin.Context, primaryKey, altKey string) (bool, bool) {
+	// Bind to map once to avoid double binding
+	var m map[string]any
+	if err := c.ShouldBindJSON(&m); err != nil {
+		return false, false
+	}
+
+	// Check primary key first
+	if val, exists := m[primaryKey]; exists {
+		if b, ok := val.(bool); ok {
+			return b, true
+		}
+	}
+
+	// Check alternative key
+	if val, exists := m[altKey]; exists {
+		if b, ok := val.(bool); ok {
+			return b, true
+		}
+	}
+
+	return false, false
+}
+
+// parseIntField extracts an integer field from the request body with primary and alternative keys.
+func (h *Handler) parseIntField(c *gin.Context, primaryKey, altKey string, min int) (int, bool) {
+	// Bind to map once to avoid double binding
+	var m map[string]any
+	if err := c.ShouldBindJSON(&m); err != nil {
+		return 0, false
+	}
+
+	// Check primary key first
+	if val, exists := m[primaryKey]; exists {
+		if f, ok := val.(float64); ok { // JSON numbers are float64
+			// Verify that the float64 value is a whole number before casting to int
+			if f != math.Floor(f) {
+				c.JSON(http.StatusBadRequest, gin.H{"error": fmt.Sprintf("%s must be a whole number", primaryKey)})
+				return 0, false
+			}
+			intVal := int(f)
+			if intVal < min {
+				c.JSON(http.StatusBadRequest, gin.H{"error": fmt.Sprintf("%s must be at least %d", primaryKey, min)})
+				return 0, false
+			}
+			return intVal, true
+		}
+		if i, ok := val.(int); ok {
+			if i < min {
+				c.JSON(http.StatusBadRequest, gin.H{"error": fmt.Sprintf("%s must be at least %d", primaryKey, min)})
+				return 0, false
+			}
+			return i, true
+		}
+	}
+
+	// Check alternative key
+	if val, exists := m[altKey]; exists {
+		if f, ok := val.(float64); ok { // JSON numbers are float64
+			// Verify that the float64 value is a whole number before casting to int
+			if f != math.Floor(f) {
+				c.JSON(http.StatusBadRequest, gin.H{"error": fmt.Sprintf("%s must be a whole number", altKey)})
+				return 0, false
+			}
+			intVal := int(f)
+			if intVal < min {
+				c.JSON(http.StatusBadRequest, gin.H{"error": fmt.Sprintf("%s must be at least %d", altKey, min)})
+				return 0, false
+			}
+			return intVal, true
+		}
+		if i, ok := val.(int); ok {
+			if i < min {
+				c.JSON(http.StatusBadRequest, gin.H{"error": fmt.Sprintf("%s must be at least %d", altKey, min)})
+				return 0, false
+			}
+			return i, true
+		}
+	}
+
+	return 0, false
+}
+
+// ensureCanEnableReadOnly checks if read-only mode can be enabled by checking for pending changes.
+func (h *Handler) ensureCanEnableReadOnly(c *gin.Context) bool {
+	if h.scheduler != nil {
+		hasChanges, err := h.scheduler.HasPendingLocalChanges()
+		if err != nil {
+			c.JSON(http.StatusInternalServerError, gin.H{
+				"error": fmt.Sprintf("Cannot check for pending changes: %v", err),
+			})
+			return false
+		}
+		if hasChanges {
+			c.JSON(http.StatusBadRequest, gin.H{
+				"error": "Cannot enable read-only mode while there are pending local changes. Please sync changes first.",
+			})
+			return false
+		}
+	}
+	return true
+}
+
+// persistConfig calls the persist method with a nil context to save the configuration.
+func (h *Handler) persistConfig() bool {
+	return h.persist(nil)
 }

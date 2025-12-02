@@ -84,6 +84,9 @@ type Config struct {
 	// Payload defines default and override rules for provider payload parameters.
 	Payload PayloadConfig `yaml:"payload" json:"payload"`
 
+	// Storage defines configuration for the storage layer, including read-only mode and sync intervals.
+	Storage StorageConfig `yaml:"storage" json:"storage"`
+
 	// OAuthExcludedModels defines per-provider global model exclusions applied to OAuth/file-backed auth entries.
 	OAuthExcludedModels map[string][]string `yaml:"oauth-excluded-models,omitempty" json:"oauth-excluded-models,omitempty"`
 }
@@ -140,6 +143,16 @@ type PayloadModelRule struct {
 	Name string `yaml:"name" json:"name"`
 	// Protocol restricts the rule to a specific translator format (e.g., "gemini", "responses").
 	Protocol string `yaml:"protocol" json:"protocol"`
+}
+
+// StorageConfig holds configuration for the storage layer, including read-only mode and sync settings.
+type StorageConfig struct {
+	// ReadOnly, when true, prevents the application from pushing changes to the storage layer.
+	ReadOnly bool `yaml:"read-only" json:"read-only"`
+
+	// SyncIntervalMinutes defines the interval in minutes for pulling changes from storage when in read-only mode.
+	// Default is 60 minutes.
+	SyncIntervalMinutes int `yaml:"sync-interval-minutes" json:"sync-interval-minutes"`
 }
 
 // ClaudeKey represents the configuration for a Claude API key,
@@ -297,6 +310,8 @@ func LoadConfigOptional(configFile string, optional bool) (*Config, error) {
 	cfg.UsageStatisticsEnabled = false
 	cfg.DisableCooling = false
 	cfg.AmpRestrictManagementToLocalhost = true // Default to secure: only localhost access
+	// Set default sync interval for storage if not specified
+	cfg.Storage.SyncIntervalMinutes = 60
 	if err = yaml.Unmarshal(data, &cfg); err != nil {
 		if optional {
 			// In cloud deploy mode, if YAML parsing fails, return empty config instead of error.
