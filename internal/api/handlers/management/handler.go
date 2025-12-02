@@ -33,7 +33,7 @@ type attemptInfo struct {
 type Handler struct {
 	cfg                 *config.Config
 	configFilePath      string
-	mu                  sync.Mutex
+	mu                  sync.RWMutex
 	attemptsMu          sync.Mutex
 	failedAttempts      map[string]*attemptInfo // keyed by client IP
 	authManager         *coreauth.Manager
@@ -241,10 +241,14 @@ func (h *Handler) persist(c *gin.Context) bool {
 	defer h.mu.Unlock()
 	// Preserve comments when writing
 	if err := config.SaveConfigPreserveComments(h.configFilePath, h.cfg); err != nil {
-		c.JSON(http.StatusInternalServerError, gin.H{"error": fmt.Sprintf("failed to save config: %v", err)})
+		if c != nil {
+			c.JSON(http.StatusInternalServerError, gin.H{"error": fmt.Sprintf("failed to save config: %v", err)})
+		}
 		return false
 	}
-	c.JSON(http.StatusOK, gin.H{"status": "ok"})
+	if c != nil {
+		c.JSON(http.StatusOK, gin.H{"status": "ok"})
+	}
 	return true
 }
 
@@ -297,6 +301,9 @@ func (h *Handler) updateStringField(c *gin.Context, set func(string)) {
 
 // GetStorageReadOnly returns the current read-only status of the storage.
 func (h *Handler) GetStorageReadOnly(c *gin.Context) {
+	h.mu.RLock()
+	defer h.mu.RUnlock()
+	
 	if h.cfg == nil {
 		c.JSON(http.StatusInternalServerError, gin.H{"error": "configuration not available"})
 		return
@@ -344,7 +351,11 @@ const minSyncIntervalMinutes = 1
 // PutStorageSyncInterval updates the sync interval in minutes.
 func (h *Handler) PutStorageSyncInterval(c *gin.Context) {
 	// Parse the integer field from the request body
-	value, found := h.parseIntField(c, "sync_interval_minutes", "value", minSyncIntervalMinutes)
+	value, found, err := h.parseIntField(c, "sync_interval_minutes", "value", minSyncIntervalMinutes)
+	if err != nil {
+		c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
+		return
+	}
 	if !found {
 		c.JSON(http.StatusBadRequest, gin.H{"error": "invalid body"})
 		return
@@ -427,11 +438,11 @@ func (h *Handler) parseBoolField(c *gin.Context, primaryKey, altKey string) (boo
 }
 
 // parseIntField extracts an integer field from the request body with primary and alternative keys.
-func (h *Handler) parseIntField(c *gin.Context, primaryKey, altKey string, min int) (int, bool) {
+func (h *Handler) parseIntField(c *gin.Context, primaryKey, altKey string, min int) (int, bool, error) {
 	// Bind to map once to avoid double binding
 	var m map[string]any
 	if err := c.ShouldBindJSON(&m); err != nil {
-		return 0, false
+		return 0, false, nil
 	}
 
 	// Check primary key first
@@ -439,23 +450,22 @@ func (h *Handler) parseIntField(c *gin.Context, primaryKey, altKey string, min i
 		if f, ok := val.(float64); ok { // JSON numbers are float64
 			// Verify that the float64 value is a whole number before casting to int
 			if f != math.Floor(f) {
-				c.JSON(http.StatusBadRequest, gin.H{"error": fmt.Sprintf("%s must be a whole number", primaryKey)})
-				return 0, false
+				return 0, true, fmt.Errorf("%s must be a whole number", primaryKey)
 			}
 			intVal := int(f)
 			if intVal < min {
-				c.JSON(http.StatusBadRequest, gin.H{"error": fmt.Sprintf("%s must be at least %d", primaryKey, min)})
-				return 0, false
+				return 0, true, fmt.Errorf("%s must be at least %d", primaryKey, min)
 			}
-			return intVal, true
+			return intVal, true, nil
 		}
 		if i, ok := val.(int); ok {
 			if i < min {
-				c.JSON(http.StatusBadRequest, gin.H{"error": fmt.Sprintf("%s must be at least %d", primaryKey, min)})
-				return 0, false
+				return 0, true, fmt.Errorf("%s must be at least %d", primaryKey, min)
 			}
-			return i, true
+			return i, true, nil
 		}
+		// Value exists but is not the right type
+		return 0, true, fmt.Errorf("%s must be a number", primaryKey)
 	}
 
 	// Check alternative key
@@ -463,26 +473,25 @@ func (h *Handler) parseIntField(c *gin.Context, primaryKey, altKey string, min i
 		if f, ok := val.(float64); ok { // JSON numbers are float64
 			// Verify that the float64 value is a whole number before casting to int
 			if f != math.Floor(f) {
-				c.JSON(http.StatusBadRequest, gin.H{"error": fmt.Sprintf("%s must be a whole number", altKey)})
-				return 0, false
+				return 0, true, fmt.Errorf("%s must be a whole number", altKey)
 			}
 			intVal := int(f)
 			if intVal < min {
-				c.JSON(http.StatusBadRequest, gin.H{"error": fmt.Sprintf("%s must be at least %d", altKey, min)})
-				return 0, false
+				return 0, true, fmt.Errorf("%s must be at least %d", altKey, min)
 			}
-			return intVal, true
+			return intVal, true, nil
 		}
 		if i, ok := val.(int); ok {
 			if i < min {
-				c.JSON(http.StatusBadRequest, gin.H{"error": fmt.Sprintf("%s must be at least %d", altKey, min)})
-				return 0, false
+				return 0, true, fmt.Errorf("%s must be at least %d", altKey, min)
 			}
-			return i, true
+			return i, true, nil
 		}
+		// Value exists but is not the right type
+		return 0, true, fmt.Errorf("%s must be a number", altKey)
 	}
 
-	return 0, false
+	return 0, false, nil
 }
 
 // ensureCanEnableReadOnly checks if read-only mode can be enabled by checking for pending changes.

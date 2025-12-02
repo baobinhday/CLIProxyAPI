@@ -650,6 +650,9 @@ func (s *GitTokenStore) commitAndPushLocked(message string, relPaths ...string) 
 		if errors.Is(err, git.NoErrAlreadyUpToDate) {
 			return nil
 		}
+		if errors.Is(err, git.ErrNonFastForwardUpdate) {
+			return fmt.Errorf("git token store: push failed due to non-fast-forward update - this may require force push or manual resolution: %w", err)
+		}
 		return fmt.Errorf("git token store: push: %w", err)
 	}
 	return nil

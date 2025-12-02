@@ -949,6 +949,11 @@ func (s *Server) UpdateClients(cfg *config.Config) {
 		}
 	}
 
+	// Update GitTokenStore configuration if it exists
+	if tokenStore, ok := sdkAuth.GetTokenStore().(*store.GitTokenStore); ok {
+		tokenStore.SetConfig(cfg)
+	}
+
 	// Count client sources from configuration and auth directory
 	authFiles := util.CountAuthFiles(cfg.AuthDir)
 	geminiAPIKeyCount := len(cfg.GeminiKey)

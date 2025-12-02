@@ -1,6 +1,6 @@
 # Plan for Read-Only Storage Feature
 
-This document outlines the steps to implement a read-only storage mode for the CLI Proxy API.
+This document outlines the steps to implement a read-only storage mode for the CLIProxyAPI.
 
 Created: 2025-12-02 09:10:00
 Last Modified: 2025-12-02 09:22:32
