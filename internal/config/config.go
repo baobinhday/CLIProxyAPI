@@ -11,6 +11,7 @@ import (
 	"os"
 	"strings"
 	"syscall"
+	"sync/atomic"
 
 	"github.com/router-for-me/CLIProxyAPI/v6/sdk/config"
 	"golang.org/x/crypto/bcrypt"
@@ -97,6 +98,12 @@ type Config struct {
 	// Storage defines configuration for the storage layer, including read-only mode and sync intervals.
 	Storage StorageConfig `yaml:"storage" json:"storage"`
 
+	// Read-only storage settings
+	readOnlyStorage atomic.Bool
+
+	// Sync interval for read-only storage in minutes
+	syncIntervalMinutes atomic.Int64
+
 	// OAuthExcludedModels defines per-provider global model exclusions applied to OAuth/file-backed auth entries.
 	OAuthExcludedModels map[string][]string `yaml:"oauth-excluded-models,omitempty" json:"oauth-excluded-models,omitempty"`
 }
@@ -171,10 +178,6 @@ type PayloadModelRule struct {
 type StorageConfig struct {
 	// ReadOnly, when true, prevents the application from pushing changes to the storage layer.
 	ReadOnly bool `yaml:"read-only" json:"read-only"`
-
-	// SyncIntervalMinutes defines the interval in minutes for pulling changes from storage when in read-only mode.
-	// Default is 60 minutes.
-	SyncIntervalMinutes int `yaml:"sync-interval-minutes" json:"sync-interval-minutes"`
 }
 
 // ClaudeKey represents the configuration for a Claude API key,
@@ -332,8 +335,6 @@ func LoadConfigOptional(configFile string, optional bool) (*Config, error) {
 	cfg.UsageStatisticsEnabled = false
 	cfg.DisableCooling = false
 	cfg.AmpRestrictManagementToLocalhost = true // Default to secure: only localhost access
-	// Set default sync interval for storage if not specified
-	cfg.Storage.SyncIntervalMinutes = 60
 	if err = yaml.Unmarshal(data, &cfg); err != nil {
 		if optional {
 			// In cloud deploy mode, if YAML parsing fails, return empty config instead of error.
@@ -376,6 +377,16 @@ func LoadConfigOptional(configFile string, optional bool) (*Config, error) {
 
 	// Normalize OAuth provider model exclusion map.
 	cfg.OAuthExcludedModels = NormalizeOAuthExcludedModels(cfg.OAuthExcludedModels)
+
+	// Load the standalone read-only storage configuration
+	if err := LoadReadOnlyStorageConfig(&cfg, "data/read_only_storage.json"); err != nil {
+		// Log the error but don't fail the entire config loading process
+		// The system will default to read-only storage being false
+		fmt.Fprintf(os.Stderr, "Warning: failed to load read-only storage config: %v\n", err)
+	}
+	
+	// Initialize the atomic sync interval with the value from the Storage config
+	cfg.SetSyncIntervalMinutes(60) // Use default value of 60 minutes
 
 	// Return the populated configuration struct.
 	return &cfg, nil
@@ -1116,3 +1127,25 @@ func normalizeCollectionNodeStyles(node *yaml.Node) {
 		// Scalars keep their existing style to preserve quoting
 	}
 }
+
+// Getter for read-only storage setting
+func (cfg *Config) IsReadOnlyStorage() bool {
+	return cfg.readOnlyStorage.Load()
+}
+
+// Setter for read-only storage setting
+func (cfg *Config) SetReadOnlyStorage(value bool) {
+	cfg.readOnlyStorage.Store(value)
+}
+
+// Getter for sync interval minutes
+func (cfg *Config) SyncIntervalMinutes() int {
+	return int(cfg.syncIntervalMinutes.Load())
+}
+
+// Setter for sync interval minutes
+func (cfg *Config) SetSyncIntervalMinutes(value int) {
+	cfg.syncIntervalMinutes.Store(int64(value))
+}
+
+

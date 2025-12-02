@@ -276,7 +276,7 @@ func NewServer(cfg *config.Config, authManager *auth.Manager, accessManager *sdk
 		s.mgmt.SetScheduler(scheduler)
 
 		// Start the scheduler if read-only mode is enabled in the configuration
-		if cfg.Storage.ReadOnly {
+		if cfg.IsReadOnlyStorage() {
 			if err := scheduler.Start(); err != nil {
 				log.WithError(err).Error("failed to start Git scheduler")
 			} else {
