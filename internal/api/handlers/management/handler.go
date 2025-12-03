@@ -238,10 +238,14 @@ func (h *Handler) Middleware() gin.HandlerFunc {
 
 // persist saves the current in-memory config to disk.
 func (h *Handler) persist(c *gin.Context) bool {
+	// Take a snapshot of the config while holding the lock
 	h.mu.Lock()
-	defer h.mu.Unlock()
-	// Preserve comments when writing
-	if err := config.SaveConfigPreserveComments(h.configFilePath, h.cfg); err != nil {
+	cfgSnapshot := h.cfg
+	configFilePath := h.configFilePath
+	h.mu.Unlock()
+	
+	// Perform file I/O after releasing the lock to avoid contention
+	if err := config.SaveConfigPreserveComments(configFilePath, cfgSnapshot); err != nil {
 		if c != nil {
 			c.JSON(http.StatusInternalServerError, gin.H{"error": fmt.Sprintf("failed to save config: %v", err)})
 		}
@@ -369,15 +373,15 @@ func (h *Handler) PutStorageSyncInterval(c *gin.Context) {
 // updateStorageReadOnly updates the storage read-only flag and manages the scheduler.
 func (h *Handler) updateStorageReadOnly(readOnly bool) {
 	h.mu.Lock()
-	defer h.mu.Unlock()
-
-	if h.cfg != nil {
-		oldReadOnly := h.cfg.IsReadOnlyStorage()
-		h.cfg.SetReadOnlyStorage(readOnly)
+	// Take a snapshot of the config while holding the lock
+	cfgSnapshot := h.cfg
+	if cfgSnapshot != nil {
+		oldReadOnly := cfgSnapshot.IsReadOnlyStorage()
+		cfgSnapshot.SetReadOnlyStorage(readOnly)
 
 		// If the scheduler exists, update it with the new configuration
 		if h.scheduler != nil {
-			_ = h.scheduler.UpdateConfig(h.cfg)
+			_ = h.scheduler.UpdateConfig(cfgSnapshot)
 		}
 
 		// Log the change
@@ -389,42 +393,50 @@ func (h *Handler) updateStorageReadOnly(readOnly bool) {
 			}
 		}
 	}
-
-	h.persistConfig() // Use the shared persist method to save config and handle response
+	h.mu.Unlock()
+	
+	// Perform file I/O after releasing the lock to avoid contention
+	h.persistConfig() // Use the shared persist method to save config
+	
+	// Persist the change to the standalone read-only storage JSON file
+	h.persistReadOnlyToJSONAfterUnlock(readOnly)
 }
 
 // updateStorageSyncInterval updates the sync interval and manages the scheduler.
 func (h *Handler) updateStorageSyncInterval(syncIntervalMinutes int) {
 	h.mu.Lock()
-	defer h.mu.Unlock()
-
-	if h.cfg != nil {
-		h.cfg.SetSyncIntervalMinutes(syncIntervalMinutes)
+	// Take a snapshot of the config while holding the lock
+	cfgSnapshot := h.cfg
+	if cfgSnapshot != nil {
+		cfgSnapshot.SetSyncIntervalMinutes(syncIntervalMinutes)
 
 		// If the scheduler exists, update it with the new configuration
 		if h.scheduler != nil {
-			_ = h.scheduler.UpdateConfig(h.cfg)
+			_ = h.scheduler.UpdateConfig(cfgSnapshot)
 		}
 
 		// Log the change
 		log.Infof("Storage sync interval updated to %d minutes", syncIntervalMinutes)
 	}
-
-	h.persistConfig() // Use the shared persist method to save config and handle response
+	h.mu.Unlock()
+	
+	// Perform file I/O after releasing the lock to avoid contention
+	h.persistConfig() // Use the shared persist method to save config
 	
 	// Persist the change to the standalone read-only storage JSON file
-	h.persistSyncIntervalToJSON(syncIntervalMinutes)
+	h.persistSyncIntervalToJSONAfterUnlock(syncIntervalMinutes)
 }
 
-// persistSyncIntervalToJSON persists the sync interval change to the standalone read-only storage JSON file.
-func (h *Handler) persistSyncIntervalToJSON(syncIntervalMinutes int) {
+// persistBothToJSONAfterUnlock persists both the read-only status and sync interval to the standalone read-only storage JSON file.
+// This method should be called after the mutex has been released to avoid blocking other operations.
+func (h *Handler) persistBothToJSONAfterUnlock(readOnly bool, syncIntervalMinutes int) {
 	// Read the current data/read_only_storage.json file
 	data, err := os.ReadFile("data/read_only_storage.json")
 	if err != nil {
 		if !os.IsNotExist(err) {
 			log.Errorf("Failed to read read_only_storage.json: %v", err)
 		}
-		// If file doesn't exist, we'll create it with the new value
+		// If file doesn't exist, we'll create it with the current values
 		data = []byte(`{"read_only": false}`)
 	}
 
@@ -435,7 +447,8 @@ func (h *Handler) persistSyncIntervalToJSON(syncIntervalMinutes int) {
 		return
 	}
 
-	// Update the SyncIntervalMinutes field
+	// Update both fields
+	readOnlyConfig.ReadOnly = readOnly
 	readOnlyConfig.SyncIntervalMinutes = syncIntervalMinutes
 
 	// Marshal the updated struct back into JSON
@@ -450,6 +463,38 @@ func (h *Handler) persistSyncIntervalToJSON(syncIntervalMinutes int) {
 		log.Errorf("Failed to write updated read-only storage config: %v", err)
 		return
 	}
+}
+
+// persistReadOnlyToJSONAfterUnlock persists the read-only status change to the standalone read-only storage JSON file.
+// This method should be called after the mutex has been released to avoid blocking other operations.
+func (h *Handler) persistReadOnlyToJSONAfterUnlock(readOnly bool) {
+	// Get the current sync interval value to maintain it in the JSON file
+	h.mu.RLock()
+	var currentSyncInterval int
+	if h.cfg != nil {
+		currentSyncInterval = h.cfg.SyncIntervalMinutes()
+	} else {
+		currentSyncInterval = 0 // default value
+	}
+	h.mu.RUnlock()
+	
+	h.persistBothToJSONAfterUnlock(readOnly, currentSyncInterval)
+}
+
+// persistSyncIntervalToJSONAfterUnlock persists the sync interval change to the standalone read-only storage JSON file.
+// This method should be called after the mutex has been released to avoid blocking other operations.
+func (h *Handler) persistSyncIntervalToJSONAfterUnlock(syncIntervalMinutes int) {
+	// Get the current read-only value to maintain it in the JSON file
+	h.mu.RLock()
+	var currentReadOnly bool
+	if h.cfg != nil {
+		currentReadOnly = h.cfg.IsReadOnlyStorage()
+	} else {
+		currentReadOnly = false // default value
+	}
+	h.mu.RUnlock()
+	
+	h.persistBothToJSONAfterUnlock(currentReadOnly, syncIntervalMinutes)
 }
 
 // parseBoolField extracts a boolean field from the request body with primary and alternative keys.
