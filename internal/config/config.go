@@ -9,6 +9,7 @@ import (
 	"errors"
 	"fmt"
 	"os"
+	"strconv"
 	"strings"
 	"sync/atomic"
 	"syscall"
@@ -317,7 +318,25 @@ func LoadConfigOptional(configFile string, optional bool) (*Config, error) {
 		if optional {
 			if os.IsNotExist(err) || errors.Is(err, syscall.EISDIR) {
 				// Missing and optional: return empty config (cloud deploy standby).
-				return &Config{}, nil
+				// But set defaults first
+				cfg := &Config{}
+				cfg.SetSyncIntervalMinutes(5) // Use default value of 5 minutes as specified in requirements
+				cfg.SetReadOnlyStorage(false) // Default to false as specified in requirements
+				// Override with environment variables if set
+				if readOnlyStr := os.Getenv("READ_ONLY"); readOnlyStr != "" {
+					if readOnlyStr == "true" || readOnlyStr == "1" {
+						cfg.SetReadOnlyStorage(true)
+					} else if readOnlyStr == "false" || readOnlyStr == "0" {
+						cfg.SetReadOnlyStorage(false)
+					}
+				}
+				
+				if syncIntervalStr := os.Getenv("SYNC_INTERVAL_MINUTES"); syncIntervalStr != "" {
+					if syncInterval, err := strconv.Atoi(syncIntervalStr); err == nil && syncInterval > 0 {
+						cfg.SetSyncIntervalMinutes(syncInterval)
+					}
+				}
+				return cfg, nil
 			}
 		}
 		return nil, fmt.Errorf("failed to read config file: %w", err)
@@ -325,7 +344,25 @@ func LoadConfigOptional(configFile string, optional bool) (*Config, error) {
 
 	// In cloud deploy mode (optional=true), if file is empty or contains only whitespace, return empty config.
 	if optional && len(data) == 0 {
-		return &Config{}, nil
+		// But set defaults first
+		cfg := &Config{}
+		cfg.SetSyncIntervalMinutes(5) // Use default value of 5 minutes as specified in requirements
+		cfg.SetReadOnlyStorage(false) // Default to false as specified in requirements
+		// Override with environment variables if set
+		if readOnlyStr := os.Getenv("READ_ONLY"); readOnlyStr != "" {
+			if readOnlyStr == "true" || readOnlyStr == "1" {
+				cfg.SetReadOnlyStorage(true)
+			} else if readOnlyStr == "false" || readOnlyStr == "0" {
+				cfg.SetReadOnlyStorage(false)
+			}
+		}
+		
+		if syncIntervalStr := os.Getenv("SYNC_INTERVAL_MINUTES"); syncIntervalStr != "" {
+			if syncInterval, err := strconv.Atoi(syncIntervalStr); err == nil && syncInterval > 0 {
+				cfg.SetSyncIntervalMinutes(syncInterval)
+			}
+		}
+		return cfg, nil
 	}
 
 	// Unmarshal the YAML data into the Config struct.
@@ -335,12 +372,31 @@ func LoadConfigOptional(configFile string, optional bool) (*Config, error) {
 	cfg.UsageStatisticsEnabled = false
 	cfg.DisableCooling = false
 	cfg.AmpCode.RestrictManagementToLocalhost = true // Default to secure: only localhost access
+	// Initialize the atomic sync interval with a default value
+	cfg.SetSyncIntervalMinutes(5) // Use default value of 5 minutes as specified in requirements
+	// Set default read-only storage to false
+	cfg.SetReadOnlyStorage(false)
 	if err = yaml.Unmarshal(data, &cfg); err != nil {
 		if optional {
 			// In cloud deploy mode, if YAML parsing fails, return empty config instead of error.
 			return &Config{}, nil
 		}
 		return nil, fmt.Errorf("failed to parse config file: %w", err)
+	}
+	
+	// Override with environment variables if set
+	if readOnlyStr := os.Getenv("READ_ONLY"); readOnlyStr != "" {
+		if readOnlyStr == "true" || readOnlyStr == "1" {
+			cfg.SetReadOnlyStorage(true)
+		} else if readOnlyStr == "false" || readOnlyStr == "0" {
+			cfg.SetReadOnlyStorage(false)
+		}
+	}
+	
+	if syncIntervalStr := os.Getenv("SYNC_INTERVAL_MINUTES"); syncIntervalStr != "" {
+		if syncInterval, err := strconv.Atoi(syncIntervalStr); err == nil && syncInterval > 0 {
+			cfg.SetSyncIntervalMinutes(syncInterval)
+		}
 	}
 
 	var legacy legacyConfigData
@@ -409,9 +465,6 @@ func LoadConfigOptional(configFile string, optional bool) (*Config, error) {
 		// The system will default to read-only storage being false
 		fmt.Fprintf(os.Stderr, "Warning: failed to load read-only storage config: %v\n", err)
 	}
-
-	// Initialize the atomic sync interval with the value from the Storage config
-	cfg.SetSyncIntervalMinutes(60) // Use default value of 60 minutes
 
 	// Return the populated configuration struct.
 	return &cfg, nil

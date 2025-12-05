@@ -23,7 +23,7 @@ import (
 )
 
 const (
-	managementReleaseURL = "https://api.github.com/repos/router-for-me/Cli-Proxy-API-Management-Center/releases/latest"
+	managementReleaseURL = "https://api.github.com/repos/baobinhday/Cli-Proxy-API-Management-Center/releases/latest"
 	managementAssetName  = "management.html"
 	httpUserAgent        = "CLIProxyAPI-management-updater"
 	updateCheckInterval  = 3 * time.Hour

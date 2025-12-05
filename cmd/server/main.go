@@ -373,8 +373,24 @@ func main() {
 	ctxSignal, cancel := signal.NotifyContext(context.Background(), syscall.SIGINT, syscall.SIGTERM)
 	defer cancel()
 
+	// Check if read-only storage file exists, create it if it doesn't
+	storagePath := "data/read_only_storage.json"
+	if _, err := os.Stat(storagePath); os.IsNotExist(err) {
+		// Create the data directory if it doesn't exist
+		if err := os.MkdirAll("data", 0755); err != nil {
+			log.Errorf("failed to create data directory: %v", err)
+		} else {
+			// Create the file with initial content {}
+			if err := os.WriteFile(storagePath, []byte("{}"), 0644); err != nil {
+				log.Errorf("failed to create read-only storage file: %v", err)
+			} else {
+				log.Infof("created initial read-only storage file: %s", storagePath)
+			}
+		}
+	}
+
 	// Start the read-only storage configuration file watcher
-	if err = config.StartReadOnlyStorageWatcher(ctxSignal, cfg, "data/read_only_storage.json"); err != nil {
+	if err = config.StartReadOnlyStorageWatcher(ctxSignal, cfg, storagePath); err != nil {
 		log.Errorf("failed to start read-only storage watcher: %v", err)
 		// Continue running even if the watcher fails to start
 	}
