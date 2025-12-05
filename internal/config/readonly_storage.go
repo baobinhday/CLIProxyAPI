@@ -107,3 +107,40 @@ func getDirFromPath(path string) string {
 	}
 	return "."
 }
+
+// PersistReadOnlyState persists the read-only and sync interval state to the specified JSON file.
+// This function is designed to be called from outside the config package, e.g. during application startup.
+func PersistReadOnlyState(readOnly bool, syncIntervalMinutes int, path string) error {
+	// Read the current data/read_only_storage.json file
+	data, err := os.ReadFile(path)
+	if err != nil {
+		if !os.IsNotExist(err) {
+			return fmt.Errorf("failed to read read-only storage config file: %w", err)
+		}
+		// If file doesn't exist, we'll create it with the current values
+		data = []byte(`{"read_only": false}`)
+	}
+
+	// Unmarshal into ReadOnlyStorageConfig struct
+	var readOnlyConfig ReadOnlyStorageConfig
+	if err := json.Unmarshal(data, &readOnlyConfig); err != nil {
+		return fmt.Errorf("failed to parse read-only storage config: %w", err)
+	}
+
+	// Update both fields
+	readOnlyConfig.ReadOnly = readOnly
+	readOnlyConfig.SyncIntervalMinutes = syncIntervalMinutes
+
+	// Marshal the updated struct back into JSON
+	updatedData, err := json.MarshalIndent(readOnlyConfig, "", "  ")
+	if err != nil {
+		return fmt.Errorf("failed to marshal updated read-only storage config: %w", err)
+	}
+
+	// Write the new JSON content back to the file
+	if err := os.WriteFile(path, updatedData, 0644); err != nil {
+		return fmt.Errorf("failed to write updated read-only storage config: %w", err)
+	}
+
+	return nil
+}

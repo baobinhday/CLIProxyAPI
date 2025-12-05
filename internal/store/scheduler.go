@@ -262,3 +262,12 @@ func (s *GitScheduler) HasPendingLocalChanges() (bool, error) {
 	}
 	return s.tokenStore.HasPendingLocalChanges()
 }
+
+// CheckForPendingGitChanges checks for pending local Git changes (uncommitted or unpushed).
+// This function is designed to be called from outside the store package, e.g. during application startup.
+func CheckForPendingGitChanges(scheduler *GitScheduler) (bool, error) {
+	if scheduler == nil {
+		return false, fmt.Errorf("git scheduler is nil")
+	}
+	return scheduler.HasPendingLocalChanges()
+}

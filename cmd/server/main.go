@@ -485,6 +485,64 @@ func main() {
 		}
 		// Start the main proxy service
 		managementasset.StartAutoUpdater(ctxSignal, configFilePath)
+		
+		// Check for READ_ONLY environment variable and persist its value if set
+		// This check must happen after the config is loaded but before the service starts.
+		// It also requires access to the GitScheduler if using git store to check for pending changes.
+		readOnlyEnv := os.Getenv("READ_ONLY")
+		if readOnlyEnv != "" {
+			// Parse the boolean value from the env var
+			var readOnlyValue bool
+			switch strings.ToLower(strings.TrimSpace(readOnlyEnv)) {
+			case "true", "1", "yes", "on":
+				readOnlyValue = true
+			case "false", "0", "no", "off", "":
+				readOnlyValue = false
+			default:
+				log.Fatalf("Invalid value for READ_ONLY environment variable: %s. Must be true/false, 1/0, yes/no, or on/off", readOnlyEnv)
+			}
+			
+			// If value is true, check for pending git changes first (only if using git store).
+			if readOnlyValue && useGitStore && gitStoreInst != nil {
+				gitScheduler := store.NewGitScheduler(cfg, gitStoreInst)
+				hasChanges, err := store.CheckForPendingGitChanges(gitScheduler)
+				if err != nil {
+					log.Fatalf("Failed to check for pending Git changes: %v", err)
+				}
+				if hasChanges {
+					log.Error("Cannot enable read-only mode via READ_ONLY environment variable: there are pending local changes. Please sync changes first.")
+					// Do not enable read-only mode
+					readOnlyValue = false
+				} else {
+					// Safe to proceed, update the config in memory
+					cfg.SetReadOnlyStorage(readOnlyValue)
+					// Use the configured sync interval, defaulting to 0 if not set
+					syncInterval := cfg.SyncIntervalMinutes()
+					cfg.SetSyncIntervalMinutes(syncInterval)
+				}
+			} else if !readOnlyValue {
+				// If READ_ONLY is false, just update the config in memory
+				cfg.SetReadOnlyStorage(readOnlyValue)
+				// Use the configured sync interval, defaulting to 0 if not set
+				syncInterval := cfg.SyncIntervalMinutes()
+				cfg.SetSyncIntervalMinutes(syncInterval)
+			} else if !useGitStore {
+				// If READ_ONLY is true but not using git store, we can proceed without checking for changes
+				cfg.SetReadOnlyStorage(readOnlyValue)
+				// Use the configured sync interval, defaulting to 0 if not set
+				syncInterval := cfg.SyncIntervalMinutes()
+				cfg.SetSyncIntervalMinutes(syncInterval)
+			}
+			
+			// Persist the read-only state and sync interval to the JSON file if the config has been updated
+			storagePath := "data/read_only_storage.json"
+			if err := config.PersistReadOnlyState(cfg.IsReadOnlyStorage(), cfg.SyncIntervalMinutes(), storagePath); err != nil {
+				log.Errorf("Failed to persist read-only state from environment variable: %v", err)
+			} else {
+				log.Infof("Persisted read-only state (%t) and sync interval (%d min) from READ_ONLY environment variable to %s", cfg.IsReadOnlyStorage(), cfg.SyncIntervalMinutes(), storagePath)
+			}
+		}
+		
 		cmd.StartService(ctxSignal, cfg, configFilePath, password)
 	}
 }

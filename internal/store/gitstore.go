@@ -214,6 +214,10 @@ func (s *GitTokenStore) EnsureRepository() error {
 	}
 	s.dirLock.Unlock()
 	if len(initPaths) > 0 {
+		if !s.shouldPush() {
+			fmt.Println("Read-only mode enabled, skipping initial commit and push.")
+			return nil
+		}
 		s.mu.Lock()
 		err := s.commitAndPushLocked("Initialize git token store", initPaths...)
 		s.mu.Unlock()
