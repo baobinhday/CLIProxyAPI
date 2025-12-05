@@ -488,8 +488,9 @@ func (s *Server) registerManagementRoutes() {
 	{
 		mgmt.GET("/usage", s.mgmt.GetUsageStatistics)
 		mgmt.GET("/config", s.mgmt.GetConfig)
+		mgmt.GET("/config.yaml", s.mgmt.GetConfigYAML)
 		mgmt.PUT("/config.yaml", s.mgmt.PutConfigYAML)
-		mgmt.GET("/config.yaml", s.mgmt.GetConfigFile)
+		mgmt.GET("/latest-version", s.mgmt.GetLatestVersion)
 
 		mgmt.GET("/debug", s.mgmt.GetDebug)
 		mgmt.PUT("/debug", s.mgmt.PutDebug)
@@ -520,11 +521,6 @@ func (s *Server) registerManagementRoutes() {
 		mgmt.PUT("/api-keys", s.mgmt.PutAPIKeys)
 		mgmt.PATCH("/api-keys", s.mgmt.PatchAPIKeys)
 		mgmt.DELETE("/api-keys", s.mgmt.DeleteAPIKeys)
-
-		mgmt.GET("/generative-language-api-key", s.mgmt.GetGlKeys)
-		mgmt.PUT("/generative-language-api-key", s.mgmt.PutGlKeys)
-		mgmt.PATCH("/generative-language-api-key", s.mgmt.PatchGlKeys)
-		mgmt.DELETE("/generative-language-api-key", s.mgmt.DeleteGlKeys)
 
 		mgmt.GET("/gemini-api-key", s.mgmt.GetGeminiKeys)
 		mgmt.PUT("/gemini-api-key", s.mgmt.PutGeminiKeys)
@@ -975,11 +971,7 @@ func (s *Server) UpdateClients(cfg *config.Config) {
 	openAICompatCount := 0
 	for i := range cfg.OpenAICompatibility {
 		entry := cfg.OpenAICompatibility[i]
-		if len(entry.APIKeyEntries) > 0 {
-			openAICompatCount += len(entry.APIKeyEntries)
-			continue
-		}
-		openAICompatCount += len(entry.APIKeys)
+		openAICompatCount += len(entry.APIKeyEntries)
 	}
 
 	total := authFiles + geminiAPIKeyCount + claudeAPIKeyCount + codexAPIKeyCount + vertexAICompatCount + openAICompatCount
