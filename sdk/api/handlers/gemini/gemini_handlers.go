@@ -48,8 +48,24 @@ func (h *GeminiAPIHandler) Models() []map[string]any {
 // GeminiModels handles the Gemini models listing endpoint.
 // It returns a JSON response containing available Gemini models and their specifications.
 func (h *GeminiAPIHandler) GeminiModels(c *gin.Context) {
+	rawModels := h.Models()
+	normalizedModels := make([]map[string]any, 0, len(rawModels))
+	defaultMethods := []string{"generateContent"}
+	for _, model := range rawModels {
+		normalizedModel := make(map[string]any, len(model))
+		for k, v := range model {
+			normalizedModel[k] = v
+		}
+		if name, ok := normalizedModel["name"].(string); ok && name != "" && !strings.HasPrefix(name, "models/") {
+			normalizedModel["name"] = "models/" + name
+		}
+		if _, ok := normalizedModel["supportedGenerationMethods"]; !ok {
+			normalizedModel["supportedGenerationMethods"] = defaultMethods
+		}
+		normalizedModels = append(normalizedModels, normalizedModel)
+	}
 	c.JSON(http.StatusOK, gin.H{
-		"models": h.Models(),
+		"models": normalizedModels,
 	})
 }
 
@@ -68,7 +84,8 @@ func (h *GeminiAPIHandler) GeminiGetHandler(c *gin.Context) {
 		})
 		return
 	}
-	switch request.Action {
+	action := strings.TrimPrefix(request.Action, "/")
+	switch action {
 	case "gemini-3-pro-preview":
 		c.JSON(http.StatusOK, gin.H{
 			"name":             "models/gemini-3-pro-preview",
@@ -173,7 +190,7 @@ func (h *GeminiAPIHandler) GeminiHandler(c *gin.Context) {
 		})
 		return
 	}
-	action := strings.Split(request.Action, ":")
+	action := strings.Split(strings.TrimPrefix(request.Action, "/"), ":")
 	if len(action) != 2 {
 		c.JSON(http.StatusNotFound, handlers.ErrorResponse{
 			Error: handlers.ErrorDetail{

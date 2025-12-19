@@ -59,7 +59,7 @@ CLIProxyAPI includes integrated support for [Amp CLI](https://ampcode.com) and A
 - **Model mapping** to route unavailable models to alternatives (e.g., `claude-opus-4.5` → `claude-sonnet-4`)
 - Security-first design with localhost-only management endpoints
 
-**→ [Complete Amp CLI Integration Guide](docs/amp-cli-integration.md)**
+**→ [Complete Amp CLI Integration Guide](https://help.router-for.me/agent-client/amp-cli.html)**
 
 ## SDK Docs
 
@@ -94,6 +94,10 @@ Browser-based tool to translate SRT subtitles using your Gemini subscription via
 ### [CCS (Claude Code Switch)](https://github.com/kaitranntt/ccs)
 
 CLI wrapper for instant switching between multiple Claude accounts and alternative models (Gemini, Codex, Antigravity) via CLIProxyAPI OAuth - no API keys needed
+
+### [ProxyPal](https://github.com/heyhuynhgiabuu/proxypal)
+
+Native macOS GUI for managing CLIProxyAPI: configure providers, model mappings, and endpoints via OAuth - no API keys needed.
 
 > [!NOTE]  
 > If you developed a project based on CLIProxyAPI, please open a PR to add it to this list.

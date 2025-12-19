@@ -1,3 +1,6 @@
+// Package executor provides runtime execution capabilities for various AI service providers.
+// This file implements the Antigravity executor that proxies requests to the antigravity
+// upstream using OAuth credentials.
 package executor
 
 import (
@@ -27,18 +30,18 @@ import (
 )
 
 const (
-	antigravityBaseURLDaily        = "https://daily-cloudcode-pa.sandbox.googleapis.com"
-	antigravityBaseURLAutopush     = "https://autopush-cloudcode-pa.sandbox.googleapis.com"
-	antigravityBaseURLProd         = "https://cloudcode-pa.googleapis.com"
-	antigravityStreamPath          = "/v1internal:streamGenerateContent"
-	antigravityGeneratePath        = "/v1internal:generateContent"
-	antigravityModelsPath          = "/v1internal:fetchAvailableModels"
-	antigravityClientID            = "1071006060591-tmhssin2h21lcre235vtolojh4g403ep.apps.googleusercontent.com"
-	antigravityClientSecret        = "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"
-	defaultAntigravityAgent        = "antigravity/1.11.5 windows/amd64"
-	antigravityAuthType            = "antigravity"
-	refreshSkew                    = 3000 * time.Second
-	streamScannerBuffer        int = 20_971_520
+	antigravityBaseURLDaily = "https://daily-cloudcode-pa.sandbox.googleapis.com"
+	// antigravityBaseURLAutopush     = "https://autopush-cloudcode-pa.sandbox.googleapis.com"
+	antigravityBaseURLProd     = "https://cloudcode-pa.googleapis.com"
+	antigravityCountTokensPath = "/v1internal:countTokens"
+	antigravityStreamPath      = "/v1internal:streamGenerateContent"
+	antigravityGeneratePath    = "/v1internal:generateContent"
+	antigravityModelsPath      = "/v1internal:fetchAvailableModels"
+	antigravityClientID        = "1071006060591-tmhssin2h21lcre235vtolojh4g403ep.apps.googleusercontent.com"
+	antigravityClientSecret    = "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"
+	defaultAntigravityAgent    = "antigravity/1.11.5 windows/amd64"
+	antigravityAuthType        = "antigravity"
+	refreshSkew                = 3000 * time.Second
 )
 
 var randSource = rand.New(rand.NewSource(time.Now().UnixNano()))
@@ -48,19 +51,29 @@ type AntigravityExecutor struct {
 	cfg *config.Config
 }
 
-// NewAntigravityExecutor constructs a new executor instance.
+// NewAntigravityExecutor creates a new Antigravity executor instance.
+//
+// Parameters:
+//   - cfg: The application configuration
+//
+// Returns:
+//   - *AntigravityExecutor: A new Antigravity executor instance
 func NewAntigravityExecutor(cfg *config.Config) *AntigravityExecutor {
 	return &AntigravityExecutor{cfg: cfg}
 }
 
-// Identifier implements ProviderExecutor.
+// Identifier returns the executor identifier.
 func (e *AntigravityExecutor) Identifier() string { return antigravityAuthType }
 
-// PrepareRequest implements ProviderExecutor.
+// PrepareRequest prepares the HTTP request for execution (no-op for Antigravity).
 func (e *AntigravityExecutor) PrepareRequest(_ *http.Request, _ *cliproxyauth.Auth) error { return nil }
 
-// Execute handles non-streaming requests via the antigravity generate endpoint.
+// Execute performs a non-streaming request to the Antigravity API.
 func (e *AntigravityExecutor) Execute(ctx context.Context, auth *cliproxyauth.Auth, req cliproxyexecutor.Request, opts cliproxyexecutor.Options) (resp cliproxyexecutor.Response, err error) {
+	if strings.Contains(req.Model, "claude") {
+		return e.executeClaudeNonStream(ctx, auth, req, opts)
+	}
+
 	token, updatedAuth, errToken := e.ensureAccessToken(ctx, auth)
 	if errToken != nil {
 		return resp, errToken
@@ -77,6 +90,9 @@ func (e *AntigravityExecutor) Execute(ctx context.Context, auth *cliproxyauth.Au
 	translated := sdktranslator.TranslateRequest(from, to, req.Model, bytes.Clone(req.Payload), false)
 
 	translated = applyThinkingMetadataCLI(translated, req.Metadata, req.Model)
+	translated = util.ApplyGemini3ThinkingLevelFromMetadataCLI(req.Model, req.Metadata, translated)
+	translated = util.ApplyDefaultThinkingIfNeededCLI(req.Model, translated)
+	translated = normalizeAntigravityThinking(req.Model, translated)
 
 	baseURLs := antigravityBaseURLFallbackOrder(auth)
 	httpClient := newProxyAwareHTTPClient(ctx, e.cfg, auth, 0)
@@ -150,7 +166,338 @@ func (e *AntigravityExecutor) Execute(ctx context.Context, auth *cliproxyauth.Au
 	return resp, err
 }
 
-// ExecuteStream handles streaming requests via the antigravity upstream.
+// executeClaudeNonStream performs a claude non-streaming request to the Antigravity API.
+func (e *AntigravityExecutor) executeClaudeNonStream(ctx context.Context, auth *cliproxyauth.Auth, req cliproxyexecutor.Request, opts cliproxyexecutor.Options) (resp cliproxyexecutor.Response, err error) {
+	token, updatedAuth, errToken := e.ensureAccessToken(ctx, auth)
+	if errToken != nil {
+		return resp, errToken
+	}
+	if updatedAuth != nil {
+		auth = updatedAuth
+	}
+
+	reporter := newUsageReporter(ctx, e.Identifier(), req.Model, auth)
+	defer reporter.trackFailure(ctx, &err)
+
+	from := opts.SourceFormat
+	to := sdktranslator.FromString("antigravity")
+	translated := sdktranslator.TranslateRequest(from, to, req.Model, bytes.Clone(req.Payload), true)
+
+	translated = applyThinkingMetadataCLI(translated, req.Metadata, req.Model)
+	translated = util.ApplyGemini3ThinkingLevelFromMetadataCLI(req.Model, req.Metadata, translated)
+	translated = util.ApplyDefaultThinkingIfNeededCLI(req.Model, translated)
+	translated = normalizeAntigravityThinking(req.Model, translated)
+
+	baseURLs := antigravityBaseURLFallbackOrder(auth)
+	httpClient := newProxyAwareHTTPClient(ctx, e.cfg, auth, 0)
+
+	var lastStatus int
+	var lastBody []byte
+	var lastErr error
+
+	for idx, baseURL := range baseURLs {
+		httpReq, errReq := e.buildRequest(ctx, auth, token, req.Model, translated, true, opts.Alt, baseURL)
+		if errReq != nil {
+			err = errReq
+			return resp, err
+		}
+
+		httpResp, errDo := httpClient.Do(httpReq)
+		if errDo != nil {
+			recordAPIResponseError(ctx, e.cfg, errDo)
+			lastStatus = 0
+			lastBody = nil
+			lastErr = errDo
+			if idx+1 < len(baseURLs) {
+				log.Debugf("antigravity executor: request error on base url %s, retrying with fallback base url: %s", baseURL, baseURLs[idx+1])
+				continue
+			}
+			err = errDo
+			return resp, err
+		}
+		recordAPIResponseMetadata(ctx, e.cfg, httpResp.StatusCode, httpResp.Header.Clone())
+		if httpResp.StatusCode < http.StatusOK || httpResp.StatusCode >= http.StatusMultipleChoices {
+			bodyBytes, errRead := io.ReadAll(httpResp.Body)
+			if errClose := httpResp.Body.Close(); errClose != nil {
+				log.Errorf("antigravity executor: close response body error: %v", errClose)
+			}
+			if errRead != nil {
+				recordAPIResponseError(ctx, e.cfg, errRead)
+				lastStatus = 0
+				lastBody = nil
+				lastErr = errRead
+				if idx+1 < len(baseURLs) {
+					log.Debugf("antigravity executor: read error on base url %s, retrying with fallback base url: %s", baseURL, baseURLs[idx+1])
+					continue
+				}
+				err = errRead
+				return resp, err
+			}
+			appendAPIResponseChunk(ctx, e.cfg, bodyBytes)
+			lastStatus = httpResp.StatusCode
+			lastBody = append([]byte(nil), bodyBytes...)
+			lastErr = nil
+			if httpResp.StatusCode == http.StatusTooManyRequests && idx+1 < len(baseURLs) {
+				log.Debugf("antigravity executor: rate limited on base url %s, retrying with fallback base url: %s", baseURL, baseURLs[idx+1])
+				continue
+			}
+			err = statusErr{code: httpResp.StatusCode, msg: string(bodyBytes)}
+			return resp, err
+		}
+
+		out := make(chan cliproxyexecutor.StreamChunk)
+		go func(resp *http.Response) {
+			defer close(out)
+			defer func() {
+				if errClose := resp.Body.Close(); errClose != nil {
+					log.Errorf("antigravity executor: close response body error: %v", errClose)
+				}
+			}()
+			scanner := bufio.NewScanner(resp.Body)
+			scanner.Buffer(nil, streamScannerBuffer)
+			for scanner.Scan() {
+				line := scanner.Bytes()
+				appendAPIResponseChunk(ctx, e.cfg, line)
+
+				// Filter usage metadata for all models
+				// Only retain usage statistics in the terminal chunk
+				line = FilterSSEUsageMetadata(line)
+
+				payload := jsonPayload(line)
+				if payload == nil {
+					continue
+				}
+
+				if detail, ok := parseAntigravityStreamUsage(payload); ok {
+					reporter.publish(ctx, detail)
+				}
+
+				out <- cliproxyexecutor.StreamChunk{Payload: payload}
+			}
+			if errScan := scanner.Err(); errScan != nil {
+				recordAPIResponseError(ctx, e.cfg, errScan)
+				reporter.publishFailure(ctx)
+				out <- cliproxyexecutor.StreamChunk{Err: errScan}
+			} else {
+				reporter.ensurePublished(ctx)
+			}
+		}(httpResp)
+
+		var buffer bytes.Buffer
+		for chunk := range out {
+			if chunk.Err != nil {
+				return resp, chunk.Err
+			}
+			if len(chunk.Payload) > 0 {
+				_, _ = buffer.Write(chunk.Payload)
+				_, _ = buffer.Write([]byte("\n"))
+			}
+		}
+		resp = cliproxyexecutor.Response{Payload: e.convertStreamToNonStream(buffer.Bytes())}
+
+		reporter.publish(ctx, parseAntigravityUsage(resp.Payload))
+		var param any
+		converted := sdktranslator.TranslateNonStream(ctx, to, from, req.Model, bytes.Clone(opts.OriginalRequest), translated, resp.Payload, &param)
+		resp = cliproxyexecutor.Response{Payload: []byte(converted)}
+		reporter.ensurePublished(ctx)
+
+		return resp, nil
+	}
+
+	switch {
+	case lastStatus != 0:
+		err = statusErr{code: lastStatus, msg: string(lastBody)}
+	case lastErr != nil:
+		err = lastErr
+	default:
+		err = statusErr{code: http.StatusServiceUnavailable, msg: "antigravity executor: no base url available"}
+	}
+	return resp, err
+}
+
+func (e *AntigravityExecutor) convertStreamToNonStream(stream []byte) []byte {
+	responseTemplate := ""
+	var traceID string
+	var finishReason string
+	var modelVersion string
+	var responseID string
+	var role string
+	var usageRaw string
+	parts := make([]map[string]interface{}, 0)
+	var pendingKind string
+	var pendingText strings.Builder
+	var pendingThoughtSig string
+
+	flushPending := func() {
+		if pendingKind == "" {
+			return
+		}
+		text := pendingText.String()
+		switch pendingKind {
+		case "text":
+			if strings.TrimSpace(text) == "" {
+				pendingKind = ""
+				pendingText.Reset()
+				pendingThoughtSig = ""
+				return
+			}
+			parts = append(parts, map[string]interface{}{"text": text})
+		case "thought":
+			if strings.TrimSpace(text) == "" && pendingThoughtSig == "" {
+				pendingKind = ""
+				pendingText.Reset()
+				pendingThoughtSig = ""
+				return
+			}
+			part := map[string]interface{}{"thought": true}
+			part["text"] = text
+			if pendingThoughtSig != "" {
+				part["thoughtSignature"] = pendingThoughtSig
+			}
+			parts = append(parts, part)
+		}
+		pendingKind = ""
+		pendingText.Reset()
+		pendingThoughtSig = ""
+	}
+
+	normalizePart := func(partResult gjson.Result) map[string]interface{} {
+		var m map[string]interface{}
+		_ = json.Unmarshal([]byte(partResult.Raw), &m)
+		if m == nil {
+			m = map[string]interface{}{}
+		}
+		sig := partResult.Get("thoughtSignature").String()
+		if sig == "" {
+			sig = partResult.Get("thought_signature").String()
+		}
+		if sig != "" {
+			m["thoughtSignature"] = sig
+			delete(m, "thought_signature")
+		}
+		if inlineData, ok := m["inline_data"]; ok {
+			m["inlineData"] = inlineData
+			delete(m, "inline_data")
+		}
+		return m
+	}
+
+	for _, line := range bytes.Split(stream, []byte("\n")) {
+		trimmed := bytes.TrimSpace(line)
+		if len(trimmed) == 0 || !gjson.ValidBytes(trimmed) {
+			continue
+		}
+
+		root := gjson.ParseBytes(trimmed)
+		responseNode := root.Get("response")
+		if !responseNode.Exists() {
+			if root.Get("candidates").Exists() {
+				responseNode = root
+			} else {
+				continue
+			}
+		}
+		responseTemplate = responseNode.Raw
+
+		if traceResult := root.Get("traceId"); traceResult.Exists() && traceResult.String() != "" {
+			traceID = traceResult.String()
+		}
+
+		if roleResult := responseNode.Get("candidates.0.content.role"); roleResult.Exists() {
+			role = roleResult.String()
+		}
+
+		if finishResult := responseNode.Get("candidates.0.finishReason"); finishResult.Exists() && finishResult.String() != "" {
+			finishReason = finishResult.String()
+		}
+
+		if modelResult := responseNode.Get("modelVersion"); modelResult.Exists() && modelResult.String() != "" {
+			modelVersion = modelResult.String()
+		}
+		if responseIDResult := responseNode.Get("responseId"); responseIDResult.Exists() && responseIDResult.String() != "" {
+			responseID = responseIDResult.String()
+		}
+		if usageResult := responseNode.Get("usageMetadata"); usageResult.Exists() {
+			usageRaw = usageResult.Raw
+		} else if usageResult := root.Get("usageMetadata"); usageResult.Exists() {
+			usageRaw = usageResult.Raw
+		}
+
+		if partsResult := responseNode.Get("candidates.0.content.parts"); partsResult.IsArray() {
+			for _, part := range partsResult.Array() {
+				hasFunctionCall := part.Get("functionCall").Exists()
+				hasInlineData := part.Get("inlineData").Exists() || part.Get("inline_data").Exists()
+				sig := part.Get("thoughtSignature").String()
+				if sig == "" {
+					sig = part.Get("thought_signature").String()
+				}
+				text := part.Get("text").String()
+				thought := part.Get("thought").Bool()
+
+				if hasFunctionCall || hasInlineData {
+					flushPending()
+					parts = append(parts, normalizePart(part))
+					continue
+				}
+
+				if thought || part.Get("text").Exists() {
+					kind := "text"
+					if thought {
+						kind = "thought"
+					}
+					if pendingKind != "" && pendingKind != kind {
+						flushPending()
+					}
+					pendingKind = kind
+					pendingText.WriteString(text)
+					if kind == "thought" && sig != "" {
+						pendingThoughtSig = sig
+					}
+					continue
+				}
+
+				flushPending()
+				parts = append(parts, normalizePart(part))
+			}
+		}
+	}
+	flushPending()
+
+	if responseTemplate == "" {
+		responseTemplate = `{"candidates":[{"content":{"role":"model","parts":[]}}]}`
+	}
+
+	partsJSON, _ := json.Marshal(parts)
+	responseTemplate, _ = sjson.SetRaw(responseTemplate, "candidates.0.content.parts", string(partsJSON))
+	if role != "" {
+		responseTemplate, _ = sjson.Set(responseTemplate, "candidates.0.content.role", role)
+	}
+	if finishReason != "" {
+		responseTemplate, _ = sjson.Set(responseTemplate, "candidates.0.finishReason", finishReason)
+	}
+	if modelVersion != "" {
+		responseTemplate, _ = sjson.Set(responseTemplate, "modelVersion", modelVersion)
+	}
+	if responseID != "" {
+		responseTemplate, _ = sjson.Set(responseTemplate, "responseId", responseID)
+	}
+	if usageRaw != "" {
+		responseTemplate, _ = sjson.SetRaw(responseTemplate, "usageMetadata", usageRaw)
+	} else if !gjson.Get(responseTemplate, "usageMetadata").Exists() {
+		responseTemplate, _ = sjson.Set(responseTemplate, "usageMetadata.promptTokenCount", 0)
+		responseTemplate, _ = sjson.Set(responseTemplate, "usageMetadata.candidatesTokenCount", 0)
+		responseTemplate, _ = sjson.Set(responseTemplate, "usageMetadata.totalTokenCount", 0)
+	}
+
+	output := `{"response":{},"traceId":""}`
+	output, _ = sjson.SetRaw(output, "response", responseTemplate)
+	if traceID != "" {
+		output, _ = sjson.Set(output, "traceId", traceID)
+	}
+	return []byte(output)
+}
+
+// ExecuteStream performs a streaming request to the Antigravity API.
 func (e *AntigravityExecutor) ExecuteStream(ctx context.Context, auth *cliproxyauth.Auth, req cliproxyexecutor.Request, opts cliproxyexecutor.Options) (stream <-chan cliproxyexecutor.StreamChunk, err error) {
 	ctx = context.WithValue(ctx, "alt", "")
 
@@ -170,6 +517,9 @@ func (e *AntigravityExecutor) ExecuteStream(ctx context.Context, auth *cliproxya
 	translated := sdktranslator.TranslateRequest(from, to, req.Model, bytes.Clone(req.Payload), true)
 
 	translated = applyThinkingMetadataCLI(translated, req.Metadata, req.Model)
+	translated = util.ApplyGemini3ThinkingLevelFromMetadataCLI(req.Model, req.Metadata, translated)
+	translated = util.ApplyDefaultThinkingIfNeededCLI(req.Model, translated)
+	translated = normalizeAntigravityThinking(req.Model, translated)
 
 	baseURLs := antigravityBaseURLFallbackOrder(auth)
 	httpClient := newProxyAwareHTTPClient(ctx, e.cfg, auth, 0)
@@ -288,7 +638,7 @@ func (e *AntigravityExecutor) ExecuteStream(ctx context.Context, auth *cliproxya
 	return nil, err
 }
 
-// Refresh refreshes the OAuth token using the refresh token.
+// Refresh refreshes the authentication credentials using the refresh token.
 func (e *AntigravityExecutor) Refresh(ctx context.Context, auth *cliproxyauth.Auth) (*cliproxyauth.Auth, error) {
 	if auth == nil {
 		return auth, nil
@@ -300,9 +650,131 @@ func (e *AntigravityExecutor) Refresh(ctx context.Context, auth *cliproxyauth.Au
 	return updated, nil
 }
 
-// CountTokens is not supported for the antigravity provider.
-func (e *AntigravityExecutor) CountTokens(context.Context, *cliproxyauth.Auth, cliproxyexecutor.Request, cliproxyexecutor.Options) (cliproxyexecutor.Response, error) {
-	return cliproxyexecutor.Response{}, statusErr{code: http.StatusNotImplemented, msg: "count tokens not supported"}
+// CountTokens counts tokens for the given request using the Antigravity API.
+func (e *AntigravityExecutor) CountTokens(ctx context.Context, auth *cliproxyauth.Auth, req cliproxyexecutor.Request, opts cliproxyexecutor.Options) (cliproxyexecutor.Response, error) {
+	token, updatedAuth, errToken := e.ensureAccessToken(ctx, auth)
+	if errToken != nil {
+		return cliproxyexecutor.Response{}, errToken
+	}
+	if updatedAuth != nil {
+		auth = updatedAuth
+	}
+	if strings.TrimSpace(token) == "" {
+		return cliproxyexecutor.Response{}, statusErr{code: http.StatusUnauthorized, msg: "missing access token"}
+	}
+
+	from := opts.SourceFormat
+	to := sdktranslator.FromString("antigravity")
+	respCtx := context.WithValue(ctx, "alt", opts.Alt)
+
+	baseURLs := antigravityBaseURLFallbackOrder(auth)
+	httpClient := newProxyAwareHTTPClient(ctx, e.cfg, auth, 0)
+
+	var authID, authLabel, authType, authValue string
+	if auth != nil {
+		authID = auth.ID
+		authLabel = auth.Label
+		authType, authValue = auth.AccountInfo()
+	}
+
+	var lastStatus int
+	var lastBody []byte
+	var lastErr error
+
+	for idx, baseURL := range baseURLs {
+		payload := sdktranslator.TranslateRequest(from, to, req.Model, bytes.Clone(req.Payload), false)
+		payload = applyThinkingMetadataCLI(payload, req.Metadata, req.Model)
+		payload = util.ApplyDefaultThinkingIfNeededCLI(req.Model, payload)
+		payload = normalizeAntigravityThinking(req.Model, payload)
+		payload = deleteJSONField(payload, "project")
+		payload = deleteJSONField(payload, "model")
+		payload = deleteJSONField(payload, "request.safetySettings")
+
+		base := strings.TrimSuffix(baseURL, "/")
+		if base == "" {
+			base = buildBaseURL(auth)
+		}
+
+		var requestURL strings.Builder
+		requestURL.WriteString(base)
+		requestURL.WriteString(antigravityCountTokensPath)
+		if opts.Alt != "" {
+			requestURL.WriteString("?$alt=")
+			requestURL.WriteString(url.QueryEscape(opts.Alt))
+		}
+
+		httpReq, errReq := http.NewRequestWithContext(ctx, http.MethodPost, requestURL.String(), bytes.NewReader(payload))
+		if errReq != nil {
+			return cliproxyexecutor.Response{}, errReq
+		}
+		httpReq.Header.Set("Content-Type", "application/json")
+		httpReq.Header.Set("Authorization", "Bearer "+token)
+		httpReq.Header.Set("User-Agent", resolveUserAgent(auth))
+		httpReq.Header.Set("Accept", "application/json")
+		if host := resolveHost(base); host != "" {
+			httpReq.Host = host
+		}
+
+		recordAPIRequest(ctx, e.cfg, upstreamRequestLog{
+			URL:       requestURL.String(),
+			Method:    http.MethodPost,
+			Headers:   httpReq.Header.Clone(),
+			Body:      payload,
+			Provider:  e.Identifier(),
+			AuthID:    authID,
+			AuthLabel: authLabel,
+			AuthType:  authType,
+			AuthValue: authValue,
+		})
+
+		httpResp, errDo := httpClient.Do(httpReq)
+		if errDo != nil {
+			recordAPIResponseError(ctx, e.cfg, errDo)
+			lastStatus = 0
+			lastBody = nil
+			lastErr = errDo
+			if idx+1 < len(baseURLs) {
+				log.Debugf("antigravity executor: request error on base url %s, retrying with fallback base url: %s", baseURL, baseURLs[idx+1])
+				continue
+			}
+			return cliproxyexecutor.Response{}, errDo
+		}
+
+		recordAPIResponseMetadata(ctx, e.cfg, httpResp.StatusCode, httpResp.Header.Clone())
+		bodyBytes, errRead := io.ReadAll(httpResp.Body)
+		if errClose := httpResp.Body.Close(); errClose != nil {
+			log.Errorf("antigravity executor: close response body error: %v", errClose)
+		}
+		if errRead != nil {
+			recordAPIResponseError(ctx, e.cfg, errRead)
+			return cliproxyexecutor.Response{}, errRead
+		}
+		appendAPIResponseChunk(ctx, e.cfg, bodyBytes)
+
+		if httpResp.StatusCode >= http.StatusOK && httpResp.StatusCode < http.StatusMultipleChoices {
+			count := gjson.GetBytes(bodyBytes, "totalTokens").Int()
+			translated := sdktranslator.TranslateTokenCount(respCtx, to, from, count, bodyBytes)
+			return cliproxyexecutor.Response{Payload: []byte(translated)}, nil
+		}
+
+		lastStatus = httpResp.StatusCode
+		lastBody = append([]byte(nil), bodyBytes...)
+		lastErr = nil
+		if httpResp.StatusCode == http.StatusTooManyRequests && idx+1 < len(baseURLs) {
+			log.Debugf("antigravity executor: rate limited on base url %s, retrying with fallback base url: %s", baseURL, baseURLs[idx+1])
+			continue
+		}
+		return cliproxyexecutor.Response{}, statusErr{code: httpResp.StatusCode, msg: string(bodyBytes)}
+	}
+
+	switch {
+	case lastStatus != 0:
+		return cliproxyexecutor.Response{}, statusErr{code: lastStatus, msg: string(lastBody)}
+	case lastErr != nil:
+		return cliproxyexecutor.Response{}, lastErr
+	default:
+		return cliproxyexecutor.Response{}, statusErr{code: http.StatusServiceUnavailable, msg: "antigravity executor: no base url available"}
+	}
 }
 
 // FetchAntigravityModels retrieves available models using the supplied auth.
@@ -366,28 +838,34 @@ func FetchAntigravityModels(ctx context.Context, auth *cliproxyauth.Auth, cfg *c
 		}
 
 		now := time.Now().Unix()
+		modelConfig := registry.GetAntigravityModelConfig()
 		models := make([]*registry.ModelInfo, 0, len(result.Map()))
-		for id := range result.Map() {
-			id = modelName2Alias(id)
-			if id != "" {
+		for originalName := range result.Map() {
+			aliasName := modelName2Alias(originalName)
+			if aliasName != "" {
+				cfg := modelConfig[aliasName]
+				modelName := aliasName
+				if cfg != nil && cfg.Name != "" {
+					modelName = cfg.Name
+				}
 				modelInfo := &registry.ModelInfo{
-					ID:          id,
-					Name:        id,
-					Description: id,
-					DisplayName: id,
-					Version:     id,
+					ID:          aliasName,
+					Name:        modelName,
+					Description: aliasName,
+					DisplayName: aliasName,
+					Version:     aliasName,
 					Object:      "model",
 					Created:     now,
 					OwnedBy:     antigravityAuthType,
 					Type:        antigravityAuthType,
 				}
-				// Add Thinking support for thinking models
-				if strings.HasSuffix(id, "-thinking") || strings.Contains(id, "-thinking-") {
-					modelInfo.Thinking = &registry.ThinkingSupport{
-						Min:            1024,
-						Max:            100000,
-						ZeroAllowed:    false,
-						DynamicAllowed: true,
+				// Look up Thinking support from static config using alias name
+				if cfg != nil {
+					if cfg.Thinking != nil {
+						modelInfo.Thinking = cfg.Thinking
+					}
+					if cfg.MaxCompletionTokens > 0 {
+						modelInfo.MaxCompletionTokens = cfg.MaxCompletionTokens
 					}
 				}
 				models = append(models, modelInfo)
@@ -509,7 +987,14 @@ func (e *AntigravityExecutor) buildRequest(ctx context.Context, auth *cliproxyau
 		requestURL.WriteString(url.QueryEscape(alt))
 	}
 
-	payload = geminiToAntigravity(modelName, payload)
+	// Extract project_id from auth metadata if available
+	projectID := ""
+	if auth != nil && auth.Metadata != nil {
+		if pid, ok := auth.Metadata["project_id"].(string); ok {
+			projectID = strings.TrimSpace(pid)
+		}
+	}
+	payload = geminiToAntigravity(modelName, payload, projectID)
 	payload, _ = sjson.SetBytes(payload, "model", alias2ModelName(modelName))
 
 	if strings.Contains(modelName, "claude") {
@@ -520,11 +1005,9 @@ func (e *AntigravityExecutor) buildRequest(ctx context.Context, auth *cliproxyau
 			strJSON, _ = util.RenameKey(strJSON, p, p[:len(p)-len("parametersJsonSchema")]+"parameters")
 		}
 
-		strJSON = util.DeleteKey(strJSON, "$schema")
-		strJSON = util.DeleteKey(strJSON, "maxItems")
-		strJSON = util.DeleteKey(strJSON, "minItems")
-		strJSON = util.DeleteKey(strJSON, "minLength")
-		strJSON = util.DeleteKey(strJSON, "maxLength")
+		// Use the centralized schema cleaner to handle unsupported keywords,
+		// const->enum conversion, and flattening of types/anyOf.
+		strJSON = util.CleanJSONSchemaForGemini(strJSON)
 
 		payload = []byte(strJSON)
 	}
@@ -628,7 +1111,7 @@ func buildBaseURL(auth *cliproxyauth.Auth) string {
 	if baseURLs := antigravityBaseURLFallbackOrder(auth); len(baseURLs) > 0 {
 		return baseURLs[0]
 	}
-	return antigravityBaseURLAutopush
+	return antigravityBaseURLDaily
 }
 
 func resolveHost(base string) string {
@@ -664,7 +1147,7 @@ func antigravityBaseURLFallbackOrder(auth *cliproxyauth.Auth) []string {
 	}
 	return []string{
 		antigravityBaseURLDaily,
-		antigravityBaseURLAutopush,
+		// antigravityBaseURLAutopush,
 		antigravityBaseURLProd,
 	}
 }
@@ -689,16 +1172,22 @@ func resolveCustomAntigravityBaseURL(auth *cliproxyauth.Auth) string {
 	return ""
 }
 
-func geminiToAntigravity(modelName string, payload []byte) []byte {
+func geminiToAntigravity(modelName string, payload []byte, projectID string) []byte {
 	template, _ := sjson.Set(string(payload), "model", modelName)
 	template, _ = sjson.Set(template, "userAgent", "antigravity")
-	template, _ = sjson.Set(template, "project", generateProjectID())
+
+	// Use real project ID from auth if available, otherwise generate random (legacy fallback)
+	if projectID != "" {
+		template, _ = sjson.Set(template, "project", projectID)
+	} else {
+		template, _ = sjson.Set(template, "project", generateProjectID())
+	}
 	template, _ = sjson.Set(template, "requestId", generateRequestID())
 	template, _ = sjson.Set(template, "request.sessionId", generateSessionID())
 
 	template, _ = sjson.Delete(template, "request.safetySettings")
 	template, _ = sjson.Set(template, "request.toolConfig.functionCallingConfig.mode", "VALIDATED")
-	template, _ = sjson.Delete(template, "request.generationConfig.maxOutputTokens")
+
 	if !strings.HasPrefix(modelName, "gemini-3-") {
 		if thinkingLevel := gjson.Get(template, "request.generationConfig.thinkingConfig.thinkingLevel"); thinkingLevel.Exists() {
 			template, _ = sjson.Delete(template, "request.generationConfig.thinkingConfig.thinkingLevel")
@@ -706,7 +1195,7 @@ func geminiToAntigravity(modelName string, payload []byte) []byte {
 		}
 	}
 
-	if strings.HasPrefix(modelName, "claude-sonnet-") {
+	if strings.Contains(modelName, "claude") {
 		gjson.Get(template, "request.tools").ForEach(func(key, tool gjson.Result) bool {
 			tool.Get("functionDeclarations").ForEach(func(funKey, funcDecl gjson.Result) bool {
 				if funcDecl.Get("parametersJsonSchema").Exists() {
@@ -718,6 +1207,8 @@ func geminiToAntigravity(modelName string, payload []byte) []byte {
 			})
 			return true
 		})
+	} else {
+		template, _ = sjson.Delete(template, "request.generationConfig.maxOutputTokens")
 	}
 
 	return []byte(template)
@@ -749,6 +1240,8 @@ func modelName2Alias(modelName string) string {
 		return "gemini-3-pro-image-preview"
 	case "gemini-3-pro-high":
 		return "gemini-3-pro-preview"
+	case "gemini-3-flash":
+		return "gemini-3-flash-preview"
 	case "claude-sonnet-4-5":
 		return "gemini-claude-sonnet-4-5"
 	case "claude-sonnet-4-5-thinking":
@@ -770,6 +1263,8 @@ func alias2ModelName(modelName string) string {
 		return "gemini-3-pro-image"
 	case "gemini-3-pro-preview":
 		return "gemini-3-pro-high"
+	case "gemini-3-flash-preview":
+		return "gemini-3-flash"
 	case "gemini-claude-sonnet-4-5":
 		return "claude-sonnet-4-5"
 	case "gemini-claude-sonnet-4-5-thinking":
@@ -779,4 +1274,66 @@ func alias2ModelName(modelName string) string {
 	default:
 		return modelName
 	}
+}
+
+// normalizeAntigravityThinking clamps or removes thinking config based on model support.
+// For Claude models, it additionally ensures thinking budget < max_tokens.
+func normalizeAntigravityThinking(model string, payload []byte) []byte {
+	payload = util.StripThinkingConfigIfUnsupported(model, payload)
+	if !util.ModelSupportsThinking(model) {
+		return payload
+	}
+	budget := gjson.GetBytes(payload, "request.generationConfig.thinkingConfig.thinkingBudget")
+	if !budget.Exists() {
+		return payload
+	}
+	raw := int(budget.Int())
+	normalized := util.NormalizeThinkingBudget(model, raw)
+
+	isClaude := strings.Contains(strings.ToLower(model), "claude")
+	if isClaude {
+		effectiveMax, setDefaultMax := antigravityEffectiveMaxTokens(model, payload)
+		if effectiveMax > 0 && normalized >= effectiveMax {
+			normalized = effectiveMax - 1
+		}
+		minBudget := antigravityMinThinkingBudget(model)
+		if minBudget > 0 && normalized >= 0 && normalized < minBudget {
+			// Budget is below minimum, remove thinking config entirely
+			payload, _ = sjson.DeleteBytes(payload, "request.generationConfig.thinkingConfig")
+			return payload
+		}
+		if setDefaultMax {
+			if res, errSet := sjson.SetBytes(payload, "request.generationConfig.maxOutputTokens", effectiveMax); errSet == nil {
+				payload = res
+			}
+		}
+	}
+
+	updated, err := sjson.SetBytes(payload, "request.generationConfig.thinkingConfig.thinkingBudget", normalized)
+	if err != nil {
+		return payload
+	}
+	return updated
+}
+
+// antigravityEffectiveMaxTokens returns the max tokens to cap thinking:
+// prefer request-provided maxOutputTokens; otherwise fall back to model default.
+// The boolean indicates whether the value came from the model default (and thus should be written back).
+func antigravityEffectiveMaxTokens(model string, payload []byte) (max int, fromModel bool) {
+	if maxTok := gjson.GetBytes(payload, "request.generationConfig.maxOutputTokens"); maxTok.Exists() && maxTok.Int() > 0 {
+		return int(maxTok.Int()), false
+	}
+	if modelInfo := registry.GetGlobalRegistry().GetModelInfo(model); modelInfo != nil && modelInfo.MaxCompletionTokens > 0 {
+		return modelInfo.MaxCompletionTokens, true
+	}
+	return 0, false
+}
+
+// antigravityMinThinkingBudget returns the minimum thinking budget for a model.
+// Falls back to -1 if no model info is found.
+func antigravityMinThinkingBudget(model string) int {
+	if modelInfo := registry.GetGlobalRegistry().GetModelInfo(model); modelInfo != nil && modelInfo.Thinking != nil {
+		return modelInfo.Thinking.Min
+	}
+	return -1
 }
