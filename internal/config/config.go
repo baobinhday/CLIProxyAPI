@@ -14,7 +14,6 @@ import (
 	"sync/atomic"
 	"syscall"
 
-	"github.com/router-for-me/CLIProxyAPI/v6/sdk/config"
 	"golang.org/x/crypto/bcrypt"
 	"gopkg.in/yaml.v3"
 )
@@ -23,7 +22,7 @@ const DefaultPanelGitHubRepository = "https://github.com/router-for-me/Cli-Proxy
 
 // Config represents the application's configuration, loaded from a YAML file.
 type Config struct {
-	config.SDKConfig `yaml:",inline"`
+	SDKConfig `yaml:",inline"`
 	// Host is the network host/interface on which the API server will bind.
 	// Default is empty ("") to bind all interfaces (IPv4 + IPv6). Use "127.0.0.1" or "localhost" for local-only access.
 	Host string `yaml:"host" json:"-"`
@@ -45,6 +44,10 @@ type Config struct {
 	// LoggingToFile controls whether application logs are written to rotating files or stdout.
 	LoggingToFile bool `yaml:"logging-to-file" json:"logging-to-file"`
 
+	// LogsMaxTotalSizeMB limits the total size (in MB) of log files under the logs directory.
+	// When exceeded, the oldest log files are deleted until within the limit. Set to 0 to disable.
+	LogsMaxTotalSizeMB int `yaml:"logs-max-total-size-mb" json:"logs-max-total-size-mb"`
+
 	// UsageStatisticsEnabled toggles in-memory usage aggregation; when false, usage data is discarded.
 	UsageStatisticsEnabled bool `yaml:"usage-statistics-enabled" json:"usage-statistics-enabled"`
 
@@ -58,6 +61,9 @@ type Config struct {
 
 	// QuotaExceeded defines the behavior when a quota is exceeded.
 	QuotaExceeded QuotaExceeded `yaml:"quota-exceeded" json:"quota-exceeded"`
+
+	// Routing controls credential selection behavior.
+	Routing RoutingConfig `yaml:"routing" json:"routing"`
 
 	// WebsocketAuth enables or disables authentication for the WebSocket API.
 	WebsocketAuth bool `yaml:"ws-auth" json:"ws-auth"`
@@ -129,6 +135,13 @@ type QuotaExceeded struct {
 
 	// SwitchPreviewModel indicates whether to automatically switch to a preview model when a quota is exceeded.
 	SwitchPreviewModel bool `yaml:"switch-preview-model" json:"switch-preview-model"`
+}
+
+// RoutingConfig configures how credentials are selected for requests.
+type RoutingConfig struct {
+	// Strategy selects the credential selection strategy.
+	// Supported values: "round-robin" (default), "fill-first".
+	Strategy string `yaml:"strategy,omitempty" json:"strategy,omitempty"`
 }
 
 // AmpModelMapping defines a model name mapping for Amp CLI requests.
@@ -394,6 +407,7 @@ func LoadConfigOptional(configFile string, optional bool) (*Config, error) {
 	// Set defaults before unmarshal so that absent keys keep defaults.
 	cfg.Host = "" // Default empty: binds to all interfaces (IPv4 + IPv6)
 	cfg.LoggingToFile = false
+	cfg.LogsMaxTotalSizeMB = 0
 	cfg.UsageStatisticsEnabled = false
 	cfg.DisableCooling = false
 	cfg.AmpCode.RestrictManagementToLocalhost = true // Default to secure: only localhost access
@@ -456,6 +470,10 @@ func LoadConfigOptional(configFile string, optional bool) (*Config, error) {
 	cfg.RemoteManagement.PanelGitHubRepository = strings.TrimSpace(cfg.RemoteManagement.PanelGitHubRepository)
 	if cfg.RemoteManagement.PanelGitHubRepository == "" {
 		cfg.RemoteManagement.PanelGitHubRepository = DefaultPanelGitHubRepository
+	}
+
+	if cfg.LogsMaxTotalSizeMB < 0 {
+		cfg.LogsMaxTotalSizeMB = 0
 	}
 
 	// Sync request authentication providers with inline API keys for backwards compatibility.
@@ -771,7 +789,7 @@ func sanitizeConfigForPersist(cfg *Config) *Config {
 	}
 	clone := *cfg
 	clone.SDKConfig = cfg.SDKConfig
-	clone.SDKConfig.Access = config.AccessConfig{}
+	clone.SDKConfig.Access = AccessConfig{}
 	return &clone
 }
 

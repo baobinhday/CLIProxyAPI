@@ -37,12 +37,28 @@ func ConvertOpenAIRequestToGemini(modelName string, inputRawJSON []byte, _ bool)
 
 	// Reasoning effort -> thinkingBudget/include_thoughts
 	// Note: OpenAI official fields take precedence over extra_body.google.thinking_config
-	// Only convert for models that use numeric budgets (not discrete levels) to avoid
-	// incorrectly applying thinkingBudget for level-based models like gpt-5.
+	// Only apply numeric budgets for models that use budgets (not discrete levels) to avoid
+	// incorrectly applying thinkingBudget for level-based models like gpt-5. Gemini 3 models
+	// use thinkingLevel/includeThoughts instead.
 	re := gjson.GetBytes(rawJSON, "reasoning_effort")
 	hasOfficialThinking := re.Exists()
-	if hasOfficialThinking && util.ModelSupportsThinking(modelName) && !util.ModelUsesThinkingLevels(modelName) {
-		out = util.ApplyReasoningEffortToGemini(out, re.String())
+	if hasOfficialThinking && util.ModelSupportsThinking(modelName) {
+		effort := strings.ToLower(strings.TrimSpace(re.String()))
+		if util.IsGemini3Model(modelName) {
+			switch effort {
+			case "none":
+				out, _ = sjson.DeleteBytes(out, "generationConfig.thinkingConfig")
+			case "auto":
+				includeThoughts := true
+				out = util.ApplyGeminiThinkingLevel(out, "", &includeThoughts)
+			default:
+				if level, ok := util.ValidateGemini3ThinkingLevel(modelName, effort); ok {
+					out = util.ApplyGeminiThinkingLevel(out, level, nil)
+				}
+			}
+		} else if !util.ModelUsesThinkingLevels(modelName) {
+			out = util.ApplyReasoningEffortToGemini(out, effort)
+		}
 	}
 
 	// Cherry Studio extension extra_body.google.thinking_config (effective only when official fields are absent)
@@ -162,6 +178,14 @@ func ConvertOpenAIRequestToGemini(modelName string, inputRawJSON []byte, _ bool)
 				} else if content.IsObject() && content.Get("type").String() == "text" {
 					out, _ = sjson.SetBytes(out, "system_instruction.role", "user")
 					out, _ = sjson.SetBytes(out, "system_instruction.parts.0.text", content.Get("text").String())
+				} else if content.IsArray() {
+					contents := content.Array()
+					if len(contents) > 0 {
+						out, _ = sjson.SetBytes(out, "request.systemInstruction.role", "user")
+						for j := 0; j < len(contents); j++ {
+							out, _ = sjson.SetBytes(out, fmt.Sprintf("request.systemInstruction.parts.%d.text", j), contents[j].Get("text").String())
+						}
+					}
 				}
 			} else if role == "user" || (role == "system" && len(arr) == 1) {
 				// Build single user content node to avoid splitting into multiple contents
@@ -304,7 +328,7 @@ func ConvertOpenAIRequestToGemini(modelName string, inputRawJSON []byte, _ bool)
 								log.Warnf("Failed to set default schema type for tool '%s': %v", fn.Get("name").String(), errSet)
 								continue
 							}
-							fnRaw, errSet = sjson.Set(fnRaw, "parametersJsonSchema.properties", map[string]interface{}{})
+							fnRaw, errSet = sjson.SetRaw(fnRaw, "parametersJsonSchema.properties", `{}`)
 							if errSet != nil {
 								log.Warnf("Failed to set default schema properties for tool '%s': %v", fn.Get("name").String(), errSet)
 								continue
@@ -319,7 +343,7 @@ func ConvertOpenAIRequestToGemini(modelName string, inputRawJSON []byte, _ bool)
 							log.Warnf("Failed to set default schema type for tool '%s': %v", fn.Get("name").String(), errSet)
 							continue
 						}
-						fnRaw, errSet = sjson.Set(fnRaw, "parametersJsonSchema.properties", map[string]interface{}{})
+						fnRaw, errSet = sjson.SetRaw(fnRaw, "parametersJsonSchema.properties", `{}`)
 						if errSet != nil {
 							log.Warnf("Failed to set default schema properties for tool '%s': %v", fn.Get("name").String(), errSet)
 							continue
