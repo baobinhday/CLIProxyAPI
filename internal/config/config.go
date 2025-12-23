@@ -345,7 +345,7 @@ func LoadConfigOptional(configFile string, optional bool) (*Config, error) {
 				// But set defaults first
 				cfg := &Config{}
 				cfg.SetSyncIntervalMinutes(5) // Use default value of 5 minutes as specified in requirements
-				cfg.SetReadOnlyStorage(false) // Default to false as specified in requirements
+				cfg.SetReadOnlyStorage(true)  // Default to true for read-only storage mode
 				// Override with environment variables if set
 				if readOnlyStr := os.Getenv("READ_ONLY"); readOnlyStr != "" {
 					if readOnlyStr == "true" || readOnlyStr == "1" {
@@ -371,7 +371,7 @@ func LoadConfigOptional(configFile string, optional bool) (*Config, error) {
 		// But set defaults first
 		cfg := &Config{}
 		cfg.SetSyncIntervalMinutes(5) // Use default value of 5 minutes as specified in requirements
-		cfg.SetReadOnlyStorage(false) // Default to false as specified in requirements
+		cfg.SetReadOnlyStorage(true)  // Default to true for read-only storage mode
 		// Override with environment variables if set
 		if readOnlyStr := os.Getenv("READ_ONLY"); readOnlyStr != "" {
 			if readOnlyStr == "true" || readOnlyStr == "1" {
@@ -399,8 +399,8 @@ func LoadConfigOptional(configFile string, optional bool) (*Config, error) {
 	cfg.AmpCode.RestrictManagementToLocalhost = true // Default to secure: only localhost access
 	// Initialize the atomic sync interval with a default value
 	cfg.SetSyncIntervalMinutes(5) // Use default value of 5 minutes as specified in requirements
-	// Set default read-only storage to false
-	cfg.SetReadOnlyStorage(false)
+	// Set default read-only storage to true
+	cfg.SetReadOnlyStorage(true)
 	cfg.AmpCode.RestrictManagementToLocalhost = false // Default to false: API key auth is sufficient
 	cfg.RemoteManagement.PanelGitHubRepository = DefaultPanelGitHubRepository
 	if err = yaml.Unmarshal(data, &cfg); err != nil {

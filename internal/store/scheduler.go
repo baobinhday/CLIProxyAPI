@@ -35,7 +35,7 @@ func NewGitScheduler(cfg *config.Config, store *GitTokenStore) *GitScheduler {
 // It will periodically pull changes from the remote repository if read-only mode is enabled.
 func (s *GitScheduler) Start() error {
 	s.mu.Lock()
-	
+
 	// Check if scheduler is already running
 	if s.running {
 		// Stop the existing scheduler first
@@ -55,13 +55,6 @@ func (s *GitScheduler) Start() error {
 		return fmt.Errorf("token store is nil")
 	}
 
-	// Check if read-only mode is enabled
-	if !s.config.IsReadOnlyStorage() {
-		log.Info("Git scheduler: read-only mode is disabled, not starting scheduler")
-		s.mu.Unlock()
-		return nil
-	}
-
 	// Set running state
 	s.running = true
 	s.mu.Unlock()
@@ -77,7 +70,7 @@ func (s *GitScheduler) Start() error {
 // Stop stops the synchronization scheduler.
 func (s *GitScheduler) Stop() {
 	s.mu.Lock()
-	
+
 	if !s.running {
 		s.mu.Unlock()
 		return
@@ -98,7 +91,7 @@ func (s *GitScheduler) run(stopCh <-chan struct{}) {
 
 	// Create a cancellable context that is cancelled when stopCh receives a value
 	ctx, cancel := context.WithCancel(context.Background())
-	
+
 	// Goroutine to cancel context when stopCh receives a value
 	go func() {
 		<-stopCh
@@ -127,7 +120,7 @@ func (s *GitScheduler) run(stopCh <-chan struct{}) {
 
 			// Create a timer for the sync interval
 			timer := time.NewTimer(syncInterval)
-			
+
 			// Wait for either the timer to complete, context cancellation (stop), or stop signal
 			select {
 			case <-timer.C:
@@ -231,9 +224,9 @@ func (s *GitScheduler) UpdateConfig(cfg *config.Config) error {
 	}
 
 	s.mu.Lock()
-	
+
 	newReadOnly := cfg.IsReadOnlyStorage()
-	
+
 	// Update the config while holding the lock
 	s.config = cfg
 
