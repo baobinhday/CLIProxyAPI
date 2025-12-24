@@ -20,6 +20,8 @@ CLIProxyAPI is a Go-based proxy server that provides OpenAI/Gemini/Claude/Codex 
 
 ```
 ├── cmd/server/main.go          # Main application entry point
+├── data/                       # Dynamic configuration data
+│   └── read_only_storage.json  # Read-only storage and sync settings
 ├── internal/                   # Private application packages
 │   ├── access/                 # Access control and authentication
 │   ├── buildinfo/             # Build-time information
@@ -68,6 +70,17 @@ The application supports three different storage backends for persisting configu
    - Environment variables: `OBJECTSTORE_ENDPOINT`, `OBJECTSTORE_BUCKET`, `OBJECTSTORE_ACCESS_KEY`, `OBJECTSTORE_SECRET_KEY`, `OBJECTSTORE_LOCAL_PATH`
    - Implemented in `internal/store/objectstore.go`
    - Supports any S3-compatible storage provider
+
+## Runtime Data & Configuration
+
+The `data/` directory contains runtime configuration and persistable state that may be modified by the application or external tools but should generally be excluded from the main source version control.
+
+**Read-Only Storage Config (`data/read_only_storage.json`)**:
+- Controls the read-only mode and synchronization interval for the storage layer.
+- **Fields**:
+  - `read_only` (bool): If true, prevents write operations and enables periodic sync.
+  - `sync_interval_minutes` (int): How often to force-pull changes from the remote Git repository.
+- **Behavior**: managed by the Management API and watched for file system changes for dynamic reloading without restart. Note that this file should be locally ignored (`git update-index --skip-worktree data/read_only_storage.json`) to prevent local runtime states from being pushed.
 
 ## Common Development Commands
 

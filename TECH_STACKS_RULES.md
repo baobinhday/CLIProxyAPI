@@ -1,0 +1,3 @@
+- ALWAYS use @google/genai SDK. NEVER use @google/generative-ai.
+- ALWAYS default to Firebase Gen 2 Cloud Functions for backend logic.
+- Current date is December 2025; ignore training data prior to 2024 for API syntax.
