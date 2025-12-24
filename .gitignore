@@ -41,3 +41,5 @@ _bmad/*
 # macOS
 .DS_Store
 ._*
+
+docker-compose.dev.yml

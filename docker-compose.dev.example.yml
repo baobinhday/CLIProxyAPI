@@ -9,10 +9,10 @@ services:
       TZ: Asia/Ho_Chi_Minh
       READ_ONLY: "true"
       SYNC_INTERVAL_MINUTES: "10"
-    env_file:
-      - .env
+    # env_file:
+    #   - .env
     ports:
-      - 28007:8317
+      - 8317:8317
       - 8085:8085
       - 8085:8085/udp
       - 1455:1455
@@ -23,8 +23,8 @@ services:
       # Mount entire project for live code sync
       - .:/app
       # Mount config and data directories
-      - /home/vinbigdata/docker/cli-proxy-api/data/config.yaml:/CLIProxyAPI/config.yaml
-      - /home/vinbigdata/docker/cli-proxy-api/data/auth-dir:/root/.cli-proxy-api
+      - ./data/config.yaml:/CLIProxyAPI/config.yaml
+      - ./data/auth-dir:/root/.cli-proxy-api
     restart: unless-stopped
     networks:
       - common
