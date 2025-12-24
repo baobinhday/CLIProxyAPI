@@ -1,0 +1,40 @@
+# Air configuration for Go hot-reload
+# Documentation: https://github.com/cosmtrek/air
+
+root = "."
+tmp_dir = "tmp"
+
+[build]
+# Build command
+cmd = "go build -o ./tmp/main ./cmd/server/"
+# Binary to run
+bin = "./tmp/main"
+# Watch these extensions
+include_ext = ["go", "yaml", "yml"]
+# Exclude these directories
+exclude_dir = ["tmp", "vendor", "logs", "auths", ".git", ".github", "assets", "docs", "examples", "test"]
+# Exclude files matching these patterns
+exclude_file = []
+# Delay before rebuild (in milliseconds)
+delay = 1000
+# Stop running old binary before building new one
+stop_on_error = true
+# Send interrupt signal before killing process
+send_interrupt = true
+# Delay after sending interrupt signal (in milliseconds)
+kill_delay = 500
+
+[log]
+# Show log time
+time = true
+
+[color]
+# Customize colors
+main = "magenta"
+watcher = "cyan"
+build = "yellow"
+runner = "green"
+
+[misc]
+# Delete tmp directory on exit
+clean_on_exit = true

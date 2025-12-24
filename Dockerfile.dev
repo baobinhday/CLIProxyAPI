@@ -1,0 +1,22 @@
+FROM golang:1.24-alpine
+
+# Install air for hot-reload (v1.61.7 is compatible with Go 1.24)
+RUN go install github.com/air-verse/air@v1.61.7
+
+WORKDIR /app
+
+# Copy go mod files first for better caching
+COPY go.mod go.sum ./
+RUN go mod download
+
+# Expose all necessary ports
+EXPOSE 8317 8085 1455 54545 51121 11451
+
+# Set timezone
+ENV TZ=Asia/Ho_Chi_Minh
+RUN apk add --no-cache tzdata && \
+  cp /usr/share/zoneinfo/${TZ} /etc/localtime && \
+  echo "${TZ}" > /etc/timezone
+
+# Run air for hot-reload
+CMD ["air", "-c", ".air.toml"]

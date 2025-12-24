@@ -1,10 +1,12 @@
 # Binaries
 cli-proxy-api
 *.exe
+tmp/*
 
 # Configuration
 config.yaml
 .env
+data/read_only_storage.json
 
 # Generated content
 bin/*
