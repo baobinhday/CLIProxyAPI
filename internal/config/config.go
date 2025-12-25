@@ -18,7 +18,7 @@ import (
 	"gopkg.in/yaml.v3"
 )
 
-const DefaultPanelGitHubRepository = "https://github.com/baobinhday/Cli-Proxy-API-Management-Center"
+const DefaultPanelGitHubRepository = "https://github.com/router-for-me/Cli-Proxy-API-Management-Center"
 
 // Config represents the application's configuration, loaded from a YAML file.
 type Config struct {
@@ -40,6 +40,9 @@ type Config struct {
 
 	// Debug enables or disables debug-level logging and other debug features.
 	Debug bool `yaml:"debug" json:"debug"`
+
+	// CommercialMode disables high-overhead HTTP middleware features to minimize per-request memory usage.
+	CommercialMode bool `yaml:"commercial-mode" json:"commercial-mode"`
 
 	// LoggingToFile controls whether application logs are written to rotating files or stdout.
 	LoggingToFile bool `yaml:"logging-to-file" json:"logging-to-file"`
@@ -87,6 +90,9 @@ type Config struct {
 	// AmpCode contains Amp CLI upstream configuration, management restrictions, and model mappings.
 	AmpCode AmpCode `yaml:"ampcode" json:"ampcode"`
 
+	// OAuthExcludedModels defines per-provider global model exclusions applied to OAuth/file-backed auth entries.
+	OAuthExcludedModels map[string][]string `yaml:"oauth-excluded-models,omitempty" json:"oauth-excluded-models,omitempty"`
+
 	// Payload defines default and override rules for provider payload parameters.
 	Payload PayloadConfig `yaml:"payload" json:"payload"`
 
@@ -99,9 +105,7 @@ type Config struct {
 	// Sync interval for read-only storage in minutes
 	syncIntervalMinutes atomic.Int64
 
-	// OAuthExcludedModels defines per-provider global model exclusions applied to OAuth/file-backed auth entries.
-	OAuthExcludedModels    map[string][]string `yaml:"oauth-excluded-models,omitempty" json:"oauth-excluded-models,omitempty"`
-	legacyMigrationPending bool                `yaml:"-" json:"-"`
+	legacyMigrationPending bool `yaml:"-" json:"-"`
 }
 
 // TLSConfig holds HTTPS server settings.
@@ -363,7 +367,7 @@ func LoadConfigOptional(configFile string, optional bool) (*Config, error) {
 				// But set defaults first
 				cfg := &Config{}
 				cfg.SetSyncIntervalMinutes(5) // Use default value of 5 minutes as specified in requirements
-				cfg.SetReadOnlyStorage(true)  // Default to true for read-only storage mode
+				cfg.SetReadOnlyStorage(false) // Default to false for read-only storage mode
 				// Override with environment variables if set
 				if readOnlyStr := os.Getenv("READ_ONLY"); readOnlyStr != "" {
 					if readOnlyStr == "true" || readOnlyStr == "1" {
@@ -389,7 +393,7 @@ func LoadConfigOptional(configFile string, optional bool) (*Config, error) {
 		// But set defaults first
 		cfg := &Config{}
 		cfg.SetSyncIntervalMinutes(5) // Use default value of 5 minutes as specified in requirements
-		cfg.SetReadOnlyStorage(true)  // Default to true for read-only storage mode
+		cfg.SetReadOnlyStorage(false) // Default to false for read-only storage mode
 		// Override with environment variables if set
 		if readOnlyStr := os.Getenv("READ_ONLY"); readOnlyStr != "" {
 			if readOnlyStr == "true" || readOnlyStr == "1" {
@@ -415,13 +419,13 @@ func LoadConfigOptional(configFile string, optional bool) (*Config, error) {
 	cfg.LogsMaxTotalSizeMB = 0
 	cfg.UsageStatisticsEnabled = false
 	cfg.DisableCooling = false
-	cfg.AmpCode.RestrictManagementToLocalhost = true // Default to secure: only localhost access
-	// Initialize the atomic sync interval with a default value
-	cfg.SetSyncIntervalMinutes(5) // Use default value of 5 minutes as specified in requirements
-	// Set default read-only storage to true
-	cfg.SetReadOnlyStorage(true)
 	cfg.AmpCode.RestrictManagementToLocalhost = false // Default to false: API key auth is sufficient
 	cfg.RemoteManagement.PanelGitHubRepository = DefaultPanelGitHubRepository
+	// Initialize the atomic sync interval with a default value
+	cfg.SetSyncIntervalMinutes(5) // Use default value of 5 minutes as specified in requirements
+	// Set default read-only storage to false (can be overridden by file watcher or environment variables)
+	cfg.SetReadOnlyStorage(false)
+
 	if err = yaml.Unmarshal(data, &cfg); err != nil {
 		if optional {
 			// In cloud deploy mode, if YAML parsing fails, return empty config instead of error.
@@ -1458,31 +1462,7 @@ func findOpenAICompatTarget(entries []OpenAICompatibility, legacyName, legacyBas
 }
 
 func (cfg *Config) migrateLegacyAmpConfig(legacy *legacyConfigData) bool {
-	if cfg == nil || legacy == nil {
-		return false
-	}
-	changed := false
-	if cfg.AmpCode.UpstreamURL == "" {
-		if val := strings.TrimSpace(legacy.AmpUpstreamURL); val != "" {
-			cfg.AmpCode.UpstreamURL = val
-			changed = true
-		}
-	}
-	if cfg.AmpCode.UpstreamAPIKey == "" {
-		if val := strings.TrimSpace(legacy.AmpUpstreamAPIKey); val != "" {
-			cfg.AmpCode.UpstreamAPIKey = val
-			changed = true
-		}
-	}
-	if legacy.AmpRestrictManagement != nil {
-		cfg.AmpCode.RestrictManagementToLocalhost = *legacy.AmpRestrictManagement
-		changed = true
-	}
-	if len(cfg.AmpCode.ModelMappings) == 0 && len(legacy.AmpModelMappings) > 0 {
-		cfg.AmpCode.ModelMappings = append([]AmpModelMapping(nil), legacy.AmpModelMappings...)
-		changed = true
-	}
-	return changed
+	return false
 }
 
 func removeLegacyOpenAICompatAPIKeys(root *yaml.Node) {
