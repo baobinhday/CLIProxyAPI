@@ -14,11 +14,12 @@ import (
 // GitScheduler manages periodic synchronization of the Git repository
 // when the storage is in read-only mode.
 type GitScheduler struct {
-	config     *config.Config
-	tokenStore *GitTokenStore
-	stopCh     chan struct{}
-	mu         sync.Mutex // Use regular mutex for simplicity
-	running    bool
+	config         *config.Config
+	tokenStore     *GitTokenStore
+	stopCh         chan struct{}
+	mu             sync.Mutex // Use regular mutex for simplicity
+	running        bool
+	onSyncComplete func() // Callback invoked after successful sync to reload auth tokens
 }
 
 // NewGitScheduler creates a new GitScheduler instance.
@@ -29,6 +30,14 @@ func NewGitScheduler(cfg *config.Config, store *GitTokenStore) *GitScheduler {
 		stopCh:     make(chan struct{}),
 		running:    false,
 	}
+}
+
+// SetOnSyncComplete sets a callback that is invoked after successful sync.
+// This is typically used to reload auth tokens from disk after git pull.
+func (s *GitScheduler) SetOnSyncComplete(callback func()) {
+	s.mu.Lock()
+	s.onSyncComplete = callback
+	s.mu.Unlock()
 }
 
 // Start begins the synchronization scheduler based on the configuration.
@@ -169,6 +178,15 @@ func (s *GitScheduler) sync() error {
 			return fmt.Errorf("failed to pull changes: %w", err)
 		}
 
+		// Invoke the callback to reload auth tokens from disk
+		s.mu.Lock()
+		callback := s.onSyncComplete
+		s.mu.Unlock()
+		if callback != nil {
+			log.Info("Git scheduler: invoking sync complete callback to reload auth tokens")
+			callback()
+		}
+
 		log.Info("Git scheduler: sync completed successfully")
 	} else {
 		log.Info("Git scheduler: read-only mode disabled, skipping sync")
@@ -179,11 +197,15 @@ func (s *GitScheduler) sync() error {
 
 // pullChanges pulls the latest changes from the remote repository.
 // It uses the GitTokenStore's repository information and authentication.
+// In read-only mode, this uses fetch + hard reset to ensure local files
+// exactly match the remote, discarding any local changes.
 func (s *GitScheduler) pullChanges() error {
 	repoDir := s.tokenStore.repoDirSnapshot()
 	if repoDir == "" {
 		return fmt.Errorf("repository directory not configured")
 	}
+
+	log.Infof("Git scheduler: syncing from remote to %s", repoDir)
 
 	// Open the repository
 	repo, err := git.PlainOpen(repoDir)
@@ -191,32 +213,52 @@ func (s *GitScheduler) pullChanges() error {
 		return fmt.Errorf("failed to open repository: %w", err)
 	}
 
+	// Prepare authentication
+	authMethod := s.tokenStore.gitAuth()
+
+	// First, fetch the latest changes from remote
+	log.Info("Git scheduler: fetching from remote...")
+	err = repo.Fetch(&git.FetchOptions{
+		Auth:       authMethod,
+		RemoteName: "origin",
+		Force:      true,
+	})
+	if err != nil && err != git.NoErrAlreadyUpToDate {
+		return fmt.Errorf("failed to fetch changes: %w", err)
+	}
+
+	// Get the remote HEAD reference
+	remoteRef, err := repo.Reference("refs/remotes/origin/HEAD", true)
+	if err != nil {
+		// Try to get origin/main or origin/master if origin/HEAD doesn't exist
+		remoteRef, err = repo.Reference("refs/remotes/origin/main", true)
+		if err != nil {
+			remoteRef, err = repo.Reference("refs/remotes/origin/master", true)
+			if err != nil {
+				return fmt.Errorf("failed to find remote branch reference: %w", err)
+			}
+		}
+	}
+
+	log.Infof("Git scheduler: resetting to remote commit %s", remoteRef.Hash().String()[:8])
+
 	// Get the worktree
 	worktree, err := repo.Worktree()
 	if err != nil {
 		return fmt.Errorf("failed to get worktree: %w", err)
 	}
 
-	// Prepare authentication
-	authMethod := s.tokenStore.gitAuth()
-
-	// Pull changes - avoid Force: true to prevent data loss
-	err = worktree.Pull(&git.PullOptions{
-		Auth:       authMethod,
-		RemoteName: "origin",
-		// Removed Force: true to prevent overwriting local changes
+	// Hard reset to the remote HEAD - this discards all local changes
+	// and makes local files exactly match the remote
+	err = worktree.Reset(&git.ResetOptions{
+		Commit: remoteRef.Hash(),
+		Mode:   git.HardReset,
 	})
-
-	if err != nil && err != git.NoErrAlreadyUpToDate {
-		return fmt.Errorf("failed to pull changes: %w", err)
+	if err != nil {
+		return fmt.Errorf("failed to reset to remote: %w", err)
 	}
 
-	if err == git.NoErrAlreadyUpToDate {
-		log.Info("Git scheduler: repository is already up to date")
-	} else {
-		log.Info("Git scheduler: successfully pulled changes from remote")
-	}
-
+	log.Info("Git scheduler: successfully synced with remote (hard reset)")
 	return nil
 }
 

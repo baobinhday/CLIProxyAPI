@@ -273,6 +273,17 @@ func NewServer(cfg *config.Config, authManager *auth.Manager, accessManager *sdk
 		scheduler := store.NewGitScheduler(cfg, tokenStore)
 		s.mgmt.SetScheduler(scheduler)
 
+		// Set up callback to reload auth tokens after git sync
+		if authManager != nil {
+			scheduler.SetOnSyncComplete(func() {
+				if err := authManager.Load(context.Background()); err != nil {
+					log.WithError(err).Error("failed to reload auth tokens after git sync")
+				} else {
+					log.Info("Auth tokens reloaded successfully after git sync")
+				}
+			})
+		}
+
 		// Start the scheduler if read-only mode is enabled in the configuration
 		if cfg.IsReadOnlyStorage() {
 			if err := scheduler.Start(); err != nil {
