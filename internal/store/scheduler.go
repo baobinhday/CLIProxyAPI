@@ -112,6 +112,12 @@ func (s *GitScheduler) run(stopCh <-chan struct{}) {
 
 		// Check if read-only mode is enabled
 		if cfg != nil && cfg.IsReadOnlyStorage() {
+			// Perform sync at the start of each iteration
+			// This ensures immediate sync when starting and after each interval
+			if err := s.sync(); err != nil {
+				log.WithError(err).Error("Git scheduler sync failed")
+			}
+
 			// Calculate sync interval - default to 1 hour if not set or invalid
 			syncInterval := time.Duration(cfg.SyncIntervalMinutes()) * time.Minute
 			if syncInterval <= 0 {
@@ -121,12 +127,10 @@ func (s *GitScheduler) run(stopCh <-chan struct{}) {
 			// Create a timer for the sync interval
 			timer := time.NewTimer(syncInterval)
 
-			// Wait for either the timer to complete, context cancellation (stop), or stop signal
+			// Wait for either the timer to complete or stop signal
 			select {
 			case <-timer.C:
-				if err := s.sync(); err != nil {
-					log.WithError(err).Error("Git scheduler sync failed")
-				}
+				// Timer completed, loop will continue and sync again
 			case <-ctx.Done():
 				// Context cancelled (stop signal received), clean up and exit
 				if !timer.Stop() {
