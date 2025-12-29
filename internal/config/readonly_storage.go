@@ -23,6 +23,7 @@ func LoadReadOnlyStorageConfig(setter ReadOnlyStorageSetter, path string) error 
 	if err != nil {
 		if os.IsNotExist(err) {
 			// File doesn't exist, default to false
+			log.Printf("Info: read-only storage config file not found at %s, defaulting read_only to false", path)
 			setter.SetReadOnlyStorage(false)
 			return nil
 		}
@@ -32,9 +33,13 @@ func LoadReadOnlyStorageConfig(setter ReadOnlyStorageSetter, path string) error 
 	var readOnlyConfig ReadOnlyStorageConfig
 	if err := json.Unmarshal(data, &readOnlyConfig); err != nil {
 		// If JSON is invalid, default to false
+		log.Printf("Warning: failed to parse read-only storage config from %s, defaulting to false: %v", path, err)
 		setter.SetReadOnlyStorage(false)
 		return fmt.Errorf("failed to parse read-only storage config: %w", err)
 	}
+
+	log.Printf("Info: loaded read-only storage config from %s: read_only=%v, sync_interval_minutes=%d",
+		path, readOnlyConfig.ReadOnly, readOnlyConfig.SyncIntervalMinutes)
 
 	setter.SetReadOnlyStorage(readOnlyConfig.ReadOnly)
 
@@ -69,7 +74,7 @@ func StartReadOnlyStorageWatcher(ctx context.Context, setter ReadOnlyStorageSett
 				if !ok {
 					return // Channel closed
 				}
-				
+
 				// Check if the event is for our specific file
 				if event.Name == path && (event.Op&fsnotify.Write == fsnotify.Write || event.Op&fsnotify.Create == fsnotify.Create) {
 					// File was modified or created, reload the configuration

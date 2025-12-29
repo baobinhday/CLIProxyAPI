@@ -48,3 +48,4 @@ _bmad-output/*
 ._*
 
 docker-compose.dev.yml
+server

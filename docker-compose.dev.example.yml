@@ -9,6 +9,7 @@ services:
       TZ: Asia/Ho_Chi_Minh
       READ_ONLY: "true"
       SYNC_INTERVAL_MINUTES: "10"
+      MANAGEMENT_STATIC_PATH: /CLIProxyAPI/static
     # env_file:
     #   - .env
     ports:

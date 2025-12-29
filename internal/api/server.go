@@ -285,13 +285,23 @@ func NewServer(cfg *config.Config, authManager *auth.Manager, accessManager *sdk
 		}
 
 		// Start the scheduler if read-only mode is enabled in the configuration
+		log.Infof("Git scheduler: checking read-only storage mode, IsReadOnlyStorage=%v", cfg.IsReadOnlyStorage())
 		if cfg.IsReadOnlyStorage() {
 			if err := scheduler.Start(); err != nil {
 				log.WithError(err).Error("failed to start Git scheduler")
 			} else {
 				log.Info("Git scheduler started automatically based on read-only configuration")
 			}
+		} else {
+			log.Info("Git scheduler: not starting because read-only storage mode is disabled")
 		}
+	} else {
+		// Log when token store is not a GitTokenStore
+		tokenStoreType := "nil"
+		if ts := sdkAuth.GetTokenStore(); ts != nil {
+			tokenStoreType = fmt.Sprintf("%T", ts)
+		}
+		log.Infof("Git scheduler: not initialized - token store is not GitTokenStore (actual type: %s)", tokenStoreType)
 	}
 
 	// Setup routes

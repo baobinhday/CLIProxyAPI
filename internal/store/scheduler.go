@@ -197,8 +197,8 @@ func (s *GitScheduler) sync() error {
 
 // pullChanges pulls the latest changes from the remote repository.
 // It uses the GitTokenStore's repository information and authentication.
-// In read-only mode, this uses fetch + hard reset to ensure local files
-// exactly match the remote, discarding any local changes.
+// In read-only mode, this uses fetch + hard reset + clean to ensure local files
+// exactly match the remote, discarding any local changes AND removing untracked files.
 func (s *GitScheduler) pullChanges() error {
 	repoDir := s.tokenStore.repoDirSnapshot()
 	if repoDir == "" {
@@ -249,7 +249,7 @@ func (s *GitScheduler) pullChanges() error {
 	}
 
 	// Hard reset to the remote HEAD - this discards all local changes
-	// and makes local files exactly match the remote
+	// and makes tracked files exactly match the remote
 	err = worktree.Reset(&git.ResetOptions{
 		Commit: remoteRef.Hash(),
 		Mode:   git.HardReset,
@@ -258,7 +258,18 @@ func (s *GitScheduler) pullChanges() error {
 		return fmt.Errorf("failed to reset to remote: %w", err)
 	}
 
-	log.Info("Git scheduler: successfully synced with remote (hard reset)")
+	// Clean removes untracked files and directories
+	// This ensures files deleted from remote are also removed locally
+	log.Info("Git scheduler: cleaning untracked files...")
+	err = worktree.Clean(&git.CleanOptions{
+		Dir: true, // Also remove untracked directories
+	})
+	if err != nil {
+		// Log but don't fail on clean errors - the reset was successful
+		log.WithError(err).Warn("Git scheduler: failed to clean untracked files")
+	}
+
+	log.Info("Git scheduler: successfully synced with remote (hard reset + clean)")
 	return nil
 }
 
