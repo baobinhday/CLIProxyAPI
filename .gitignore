@@ -13,11 +13,15 @@ bin/*
 logs/*
 conv/*
 temp/*
+refs/*
+
+# Storage backends
 pgstore/*
 gitstore/*
 objectstore/*
+
+# Static assets
 static/*
-refs/*
 
 # Authentication data
 auths/*
@@ -37,6 +41,7 @@ GEMINI.md
 .agent/*
 .bmad/*
 _bmad/*
+_bmad-output/*
 
 # macOS
 .DS_Store
