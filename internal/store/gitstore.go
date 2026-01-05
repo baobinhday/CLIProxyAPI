@@ -188,12 +188,10 @@ func (s *GitTokenStore) EnsureRepository() error {
 		}
 		if errPull := worktree.Pull(&git.PullOptions{Auth: authMethod, RemoteName: "origin"}); errPull != nil {
 			switch {
-			case errors.Is(errPull, git.NoErrAlreadyUpToDate):
-				// Ignore clean syncs
-			case errors.Is(errPull, git.ErrUnstagedChanges):
-				// Log and ignore unstaged changes, let local changes win
-			case errors.Is(errPull, git.ErrNonFastForwardUpdate):
-				// Log and ignore non-fast-forward updates, let local changes win
+			case errors.Is(errPull, git.NoErrAlreadyUpToDate),
+				errors.Is(errPull, git.ErrUnstagedChanges),
+				errors.Is(errPull, git.ErrNonFastForwardUpdate):
+				// Ignore clean syncs, local edits, and remote divergence—local changes win.
 			case errors.Is(errPull, transport.ErrAuthenticationRequired),
 				errors.Is(errPull, plumbing.ErrReferenceNotFound),
 				errors.Is(errPull, transport.ErrEmptyRemoteRepository):
@@ -650,7 +648,7 @@ func (s *GitTokenStore) commitAndPushLocked(message string, relPaths ...string) 
 	} else if errRewrite := s.rewriteHeadAsSingleCommit(repo, headRef.Name(), commitHash, message, signature); errRewrite != nil {
 		return errRewrite
 	}
-	if err = repo.Push(&git.PushOptions{Auth: s.gitAuth()}); err != nil {
+	if err = repo.Push(&git.PushOptions{Auth: s.gitAuth(), Force: true}); err != nil {
 		if errors.Is(err, git.NoErrAlreadyUpToDate) {
 			return nil
 		}

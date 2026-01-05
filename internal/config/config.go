@@ -18,7 +18,7 @@ import (
 	"gopkg.in/yaml.v3"
 )
 
-const DefaultPanelGitHubRepository = "https://github.com/baobinhday/Cli-Proxy-API-Management-Center"
+const DefaultPanelGitHubRepository = "https://github.com/router-for-me/Cli-Proxy-API-Management-Center"
 
 // Config represents the application's configuration, loaded from a YAML file.
 type Config struct {
@@ -167,8 +167,8 @@ type ModelNameMapping struct {
 }
 
 // AmpModelMapping defines a model name mapping for Amp CLI requests.
-// When Amp requests a model that isn't available locally, this mapping
-// allows routing to an alternative model that IS available.
+// When Amp requests a model that isn't available locally, these mappings
+// allow routing to an alternative model that IS available.
 type AmpModelMapping struct {
 	// From is the model name that Amp CLI requests (e.g., "claude-opus-4.5").
 	From string `yaml:"from" json:"from"`
@@ -434,7 +434,7 @@ func LoadConfigOptional(configFile string, optional bool) (*Config, error) {
 				// But set defaults first
 				cfg := &Config{}
 				cfg.SetSyncIntervalMinutes(5) // Use default value of 5 minutes as specified in requirements
-				cfg.SetReadOnlyStorage(true)  // Default to true for read-only storage mode
+				cfg.SetReadOnlyStorage(false)  // Default to false for read-only storage mode
 				// Override with environment variables if set
 				if readOnlyStr := os.Getenv("READ_ONLY"); readOnlyStr != "" {
 					if readOnlyStr == "true" || readOnlyStr == "1" {
@@ -460,7 +460,7 @@ func LoadConfigOptional(configFile string, optional bool) (*Config, error) {
 		// But set defaults first
 		cfg := &Config{}
 		cfg.SetSyncIntervalMinutes(5) // Use default value of 5 minutes as specified in requirements
-		cfg.SetReadOnlyStorage(true)  // Default to true for read-only storage mode
+		cfg.SetReadOnlyStorage(false)  // Default to false for read-only storage mode
 		// Override with environment variables if set
 		if readOnlyStr := os.Getenv("READ_ONLY"); readOnlyStr != "" {
 			if readOnlyStr == "true" || readOnlyStr == "1" {
@@ -489,9 +489,8 @@ func LoadConfigOptional(configFile string, optional bool) (*Config, error) {
 	cfg.AmpCode.RestrictManagementToLocalhost = true // Default to secure: only localhost access
 	// Initialize the atomic sync interval with a default value
 	cfg.SetSyncIntervalMinutes(5) // Use default value of 5 minutes as specified in requirements
-	// Set default read-only storage to true
-	cfg.SetReadOnlyStorage(true)
-	cfg.AmpCode.RestrictManagementToLocalhost = false // Default to false: API key auth is sufficient
+	// Set default read-only storage to false
+	cfg.SetReadOnlyStorage(false)
 	cfg.RemoteManagement.PanelGitHubRepository = DefaultPanelGitHubRepository
 	if err = yaml.Unmarshal(data, &cfg); err != nil {
 		if optional {
