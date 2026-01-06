@@ -1074,7 +1074,7 @@ func (s *Server) UpdateClients(cfg *config.Config) {
 	)
 }
 
-func (s *Server) SetWebsocketAuthChangeHandler(fn func(oldAuth bool, newAuth bool)) {
+func (s *Server) SetWebsocketAuthChangeHandler(fn func(bool, bool)) {
 	if s == nil {
 		return
 	}

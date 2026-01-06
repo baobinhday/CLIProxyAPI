@@ -18,7 +18,7 @@ import (
 	"gopkg.in/yaml.v3"
 )
 
-const DefaultPanelGitHubRepository = "https://github.com/baobinhday/Cli-Proxy-API-Management-Center"
+const DefaultPanelGitHubRepository = "https://github.com/router-for-me/Cli-Proxy-API-Management-Center"
 
 // Config represents the application's configuration, loaded from a YAML file.
 type Config struct {
@@ -491,7 +491,6 @@ func LoadConfigOptional(configFile string, optional bool) (*Config, error) {
 	cfg.SetSyncIntervalMinutes(5) // Use default value of 5 minutes as specified in requirements
 	// Set default read-only storage to true
 	cfg.SetReadOnlyStorage(true)
-	cfg.AmpCode.RestrictManagementToLocalhost = false // Default to false: API key auth is sufficient
 	cfg.RemoteManagement.PanelGitHubRepository = DefaultPanelGitHubRepository
 	if err = yaml.Unmarshal(data, &cfg); err != nil {
 		if optional {
