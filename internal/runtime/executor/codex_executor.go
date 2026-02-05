@@ -88,12 +88,13 @@ func (e *CodexExecutor) Execute(ctx context.Context, auth *cliproxyauth.Auth, re
 
 	from := opts.SourceFormat
 	to := sdktranslator.FromString("codex")
-	originalPayload := bytes.Clone(req.Payload)
+	originalPayloadSource := req.Payload
 	if len(opts.OriginalRequest) > 0 {
-		originalPayload = bytes.Clone(opts.OriginalRequest)
+		originalPayloadSource = opts.OriginalRequest
 	}
+	originalPayload := originalPayloadSource
 	originalTranslated := sdktranslator.TranslateRequest(from, to, baseModel, originalPayload, false)
-	body := sdktranslator.TranslateRequest(from, to, baseModel, bytes.Clone(req.Payload), false)
+	body := sdktranslator.TranslateRequest(from, to, baseModel, req.Payload, false)
 
 	body, err = thinking.ApplyThinking(body, req.Model, from.String(), to.String(), e.Identifier())
 	if err != nil {
@@ -176,7 +177,7 @@ func (e *CodexExecutor) Execute(ctx context.Context, auth *cliproxyauth.Auth, re
 		}
 
 		var param any
-		out := sdktranslator.TranslateNonStream(ctx, to, from, req.Model, bytes.Clone(originalPayload), body, line, &param)
+		out := sdktranslator.TranslateNonStream(ctx, to, from, req.Model, originalPayload, body, line, &param)
 		resp = cliproxyexecutor.Response{Payload: []byte(out)}
 		return resp, nil
 	}
@@ -197,12 +198,13 @@ func (e *CodexExecutor) executeCompact(ctx context.Context, auth *cliproxyauth.A
 
 	from := opts.SourceFormat
 	to := sdktranslator.FromString("openai-response")
-	originalPayload := bytes.Clone(req.Payload)
+	originalPayloadSource := req.Payload
 	if len(opts.OriginalRequest) > 0 {
-		originalPayload = bytes.Clone(opts.OriginalRequest)
+		originalPayloadSource = opts.OriginalRequest
 	}
+	originalPayload := originalPayloadSource
 	originalTranslated := sdktranslator.TranslateRequest(from, to, baseModel, originalPayload, false)
-	body := sdktranslator.TranslateRequest(from, to, baseModel, bytes.Clone(req.Payload), false)
+	body := sdktranslator.TranslateRequest(from, to, baseModel, req.Payload, false)
 
 	body, err = thinking.ApplyThinking(body, req.Model, from.String(), to.String(), e.Identifier())
 	if err != nil {
@@ -265,7 +267,7 @@ func (e *CodexExecutor) executeCompact(ctx context.Context, auth *cliproxyauth.A
 	reporter.publish(ctx, parseOpenAIUsage(data))
 	reporter.ensurePublished(ctx)
 	var param any
-	out := sdktranslator.TranslateNonStream(ctx, to, from, req.Model, bytes.Clone(originalPayload), body, data, &param)
+	out := sdktranslator.TranslateNonStream(ctx, to, from, req.Model, originalPayload, body, data, &param)
 	resp = cliproxyexecutor.Response{Payload: []byte(out)}
 	return resp, nil
 }
@@ -286,12 +288,13 @@ func (e *CodexExecutor) ExecuteStream(ctx context.Context, auth *cliproxyauth.Au
 
 	from := opts.SourceFormat
 	to := sdktranslator.FromString("codex")
-	originalPayload := bytes.Clone(req.Payload)
+	originalPayloadSource := req.Payload
 	if len(opts.OriginalRequest) > 0 {
-		originalPayload = bytes.Clone(opts.OriginalRequest)
+		originalPayloadSource = opts.OriginalRequest
 	}
+	originalPayload := originalPayloadSource
 	originalTranslated := sdktranslator.TranslateRequest(from, to, baseModel, originalPayload, true)
-	body := sdktranslator.TranslateRequest(from, to, baseModel, bytes.Clone(req.Payload), true)
+	body := sdktranslator.TranslateRequest(from, to, baseModel, req.Payload, true)
 
 	body, err = thinking.ApplyThinking(body, req.Model, from.String(), to.String(), e.Identifier())
 	if err != nil {
@@ -378,7 +381,7 @@ func (e *CodexExecutor) ExecuteStream(ctx context.Context, auth *cliproxyauth.Au
 				}
 			}
 
-			chunks := sdktranslator.TranslateStream(ctx, to, from, req.Model, bytes.Clone(originalPayload), body, bytes.Clone(line), &param)
+			chunks := sdktranslator.TranslateStream(ctx, to, from, req.Model, originalPayload, body, bytes.Clone(line), &param)
 			for i := range chunks {
 				out <- cliproxyexecutor.StreamChunk{Payload: []byte(chunks[i])}
 			}
@@ -397,7 +400,7 @@ func (e *CodexExecutor) CountTokens(ctx context.Context, auth *cliproxyauth.Auth
 
 	from := opts.SourceFormat
 	to := sdktranslator.FromString("codex")
-	body := sdktranslator.TranslateRequest(from, to, baseModel, bytes.Clone(req.Payload), false)
+	body := sdktranslator.TranslateRequest(from, to, baseModel, req.Payload, false)
 
 	body, err := thinking.ApplyThinking(body, req.Model, from.String(), to.String(), e.Identifier())
 	if err != nil {
