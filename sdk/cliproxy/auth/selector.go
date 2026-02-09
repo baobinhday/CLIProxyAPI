@@ -8,9 +8,11 @@ import (
 	"net/http"
 	"sort"
 	"strconv"
+	"strings"
 	"sync"
 	"time"
 
+	"github.com/router-for-me/CLIProxyAPI/v6/internal/thinking"
 	cliproxyexecutor "github.com/router-for-me/CLIProxyAPI/v6/sdk/cliproxy/executor"
 )
 
@@ -18,6 +20,7 @@ import (
 type RoundRobinSelector struct {
 	mu      sync.Mutex
 	cursors map[string]int
+	maxKeys int
 }
 
 // FillFirstSelector selects the first available credential (deterministic ordering).
@@ -103,13 +106,42 @@ func (e *modelCooldownError) Headers() http.Header {
 	return headers
 }
 
-func collectAvailable(auths []*Auth, model string, now time.Time) (available []*Auth, cooldownCount int, earliest time.Time) {
-	available = make([]*Auth, 0, len(auths))
+func authPriority(auth *Auth) int {
+	if auth == nil || auth.Attributes == nil {
+		return 0
+	}
+	raw := strings.TrimSpace(auth.Attributes["priority"])
+	if raw == "" {
+		return 0
+	}
+	parsed, err := strconv.Atoi(raw)
+	if err != nil {
+		return 0
+	}
+	return parsed
+}
+
+func canonicalModelKey(model string) string {
+	model = strings.TrimSpace(model)
+	if model == "" {
+		return ""
+	}
+	parsed := thinking.ParseSuffix(model)
+	modelName := strings.TrimSpace(parsed.ModelName)
+	if modelName == "" {
+		return model
+	}
+	return modelName
+}
+
+func collectAvailableByPriority(auths []*Auth, model string, now time.Time) (available map[int][]*Auth, cooldownCount int, earliest time.Time) {
+	available = make(map[int][]*Auth)
 	for i := 0; i < len(auths); i++ {
 		candidate := auths[i]
 		blocked, reason, next := isAuthBlockedForModel(candidate, model, now)
 		if !blocked {
-			available = append(available, candidate)
+			priority := authPriority(candidate)
+			available[priority] = append(available[priority], candidate)
 			continue
 		}
 		if reason == blockReasonCooldown {
@@ -119,9 +151,6 @@ func collectAvailable(auths []*Auth, model string, now time.Time) (available []*
 			}
 		}
 	}
-	if len(available) > 1 {
-		sort.Slice(available, func(i, j int) bool { return available[i].ID < available[j].ID })
-	}
 	return available, cooldownCount, earliest
 }
 
@@ -130,18 +159,35 @@ func getAvailableAuths(auths []*Auth, provider, model string, now time.Time) ([]
 		return nil, &Error{Code: "auth_not_found", Message: "no auth candidates"}
 	}
 
-	available, cooldownCount, earliest := collectAvailable(auths, model, now)
-	if len(available) == 0 {
+	availableByPriority, cooldownCount, earliest := collectAvailableByPriority(auths, model, now)
+	if len(availableByPriority) == 0 {
 		if cooldownCount == len(auths) && !earliest.IsZero() {
+			providerForError := provider
+			if providerForError == "mixed" {
+				providerForError = ""
+			}
 			resetIn := earliest.Sub(now)
 			if resetIn < 0 {
 				resetIn = 0
 			}
-			return nil, newModelCooldownError(model, provider, resetIn)
+			return nil, newModelCooldownError(model, providerForError, resetIn)
 		}
 		return nil, &Error{Code: "auth_unavailable", Message: "no auth available"}
 	}
 
+	bestPriority := 0
+	found := false
+	for priority := range availableByPriority {
+		if !found || priority > bestPriority {
+			bestPriority = priority
+			found = true
+		}
+	}
+
+	available := availableByPriority[bestPriority]
+	if len(available) > 1 {
+		sort.Slice(available, func(i, j int) bool { return available[i].ID < available[j].ID })
+	}
 	return available, nil
 }
 
@@ -154,9 +200,16 @@ func (s *RoundRobinSelector) Pick(ctx context.Context, provider, model string, o
 	if err != nil {
 		return nil, err
 	}
-	key := provider + ":" + model
+	key := provider + ":" + canonicalModelKey(model)
 	s.mu.Lock()
 	if s.cursors == nil {
+		s.cursors = make(map[string]int)
+	}
+	limit := s.maxKeys
+	if limit <= 0 {
+		limit = 4096
+	}
+	if _, ok := s.cursors[key]; !ok && len(s.cursors) >= limit {
 		s.cursors = make(map[string]int)
 	}
 	index := s.cursors[key]
@@ -192,7 +245,14 @@ func isAuthBlockedForModel(auth *Auth, model string, now time.Time) (bool, block
 	}
 	if model != "" {
 		if len(auth.ModelStates) > 0 {
-			if state, ok := auth.ModelStates[model]; ok && state != nil {
+			state, ok := auth.ModelStates[model]
+			if (!ok || state == nil) && model != "" {
+				baseModel := canonicalModelKey(model)
+				if baseModel != "" && baseModel != model {
+					state, ok = auth.ModelStates[baseModel]
+				}
+			}
+			if ok && state != nil {
 				if state.Status == StatusDisabled {
 					return true, blockReasonDisabled, time.Time{}
 				}
