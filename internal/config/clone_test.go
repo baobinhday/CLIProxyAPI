@@ -15,6 +15,21 @@ func TestCloneForRuntimeNil(t *testing.T) {
 	}
 }
 
+func TestParseConfigBytes_AntigravitySensitiveWords(t *testing.T) {
+	cfg, errParse := ParseConfigBytes([]byte(`antigravity:
+  sensitive-words:
+    - "API"
+    - "proxy"
+`))
+	if errParse != nil {
+		t.Fatalf("ParseConfigBytes() error = %v", errParse)
+	}
+	want := []string{"API", "proxy"}
+	if !reflect.DeepEqual(cfg.Antigravity.SensitiveWords, want) {
+		t.Fatalf("Antigravity.SensitiveWords = %#v, want %#v", cfg.Antigravity.SensitiveWords, want)
+	}
+}
+
 func TestCloneForRuntimeDeepCopiesConfig(t *testing.T) {
 	cfg := sampleCloneRuntimeConfig()
 
@@ -129,7 +144,7 @@ func sampleCloneRuntimeConfig() *Config {
 		AntigravitySignatureBypassStrict: &bypassStrict,
 		GeminiKey: []GeminiKey{{
 			APIKey:         "gemini-key",
-			Models:         []GeminiModel{{Name: "gemini-upstream", Alias: "gemini-client"}},
+			Models:         []GeminiModel{{Name: "gemini-upstream", Alias: "gemini-upstream-alias"}},
 			Headers:        map[string]string{"X-Gemini": "one"},
 			ExcludedModels: []string{"gemini-hidden"},
 		}},
