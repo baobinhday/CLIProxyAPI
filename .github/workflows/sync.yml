@@ -1,0 +1,23 @@
+name: Sync Fork
+
+on:
+  schedule:
+    # Chạy vào lúc 01:00 (18:00 UTC) và 15:00 (08:00 UTC) hằng ngày
+    - cron: '0 8,18 * * *'
+  workflow_dispatch: # Để bạn có thể bấm nút chạy thủ công khi cần
+
+jobs:
+  sync:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write # Grants permission to push updates to your fork
+    steps:
+      - name: Sync upstream changes
+        uses: actions/checkout@v4
+        
+      - name: Sync Fork
+        run: |
+          # Use GitHub CLI to sync the fork natively
+          gh repo sync ${{ github.repository }} -b main
+        env:
+          GH_TOKEN: ${{ github.token }}
